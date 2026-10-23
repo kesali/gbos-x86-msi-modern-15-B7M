@@ -23,7 +23,10 @@ gbos_modules_mount() {
       || log "hwdetect: bind mount of gbos/modules FAILED"
     return 0
   fi
-  log "hwdetect: gbos/modules/lib/modules/$KVER missing, only the initramfs modules are available"
+  # A tree built for another kernel (e.g. "6.18.21-gbos-whl+" on a "6.18.21-gbos-whl" kernel) is not bound: its modules carry the other
+  # release in their vermagic and the kernel refuses them. Say so, because the symptom is only "no driver for anything" (i915, Wi-Fi, audio).
+  log "hwdetect: gbos/modules/lib/modules/$KVER missing (found: $(ls $G/modules/lib/modules 2>/dev/null | tr '\n' ' '))," \
+      "only the initramfs modules are available: rebuild the stick (tools/deploy_stick.sh) with the modules of this kernel"
   return 1
 }
 

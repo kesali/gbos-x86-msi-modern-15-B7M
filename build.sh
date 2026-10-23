@@ -66,8 +66,8 @@ if [ -z "$BUILD_TYPE" ]; then
   fi
 fi
 
-REL=https://github.com/linuxkid473/gbos-x86/releases/download/v39
-MODS=gbos86-modules-6.18.21-gbos-whl-r4.tar.xz;            MODS_SHA=ae9e2111af1873106fba4cc2e20152987c6ef4a08d17d133c898eacaedb9bc71
+REL=https://github.com/linuxkid473/gbos-x86/releases/download/v40   # r5 = the module tree of kernel #42 (release v40: tag to be created, upload build/dl/$MODS)
+MODS=gbos86-modules-6.18.21-gbos-whl-r5.tar.xz;            MODS_SHA=67b1b97f64efc2017df685357adc1299e96b047963e3a22a3c20bd87f002db46
 REL_FW=https://github.com/linuxkid473/gbos-x86/releases/download/v35
 FW=gbos86-firmware-12dfe670-sof2026.09.2-r4.tar.xz;        FW_SHA=8ad4ce620194e6555fe747bff95eb75b74c3c8f198ff7e3d5280c02f37bb1463
 # KernelSU's userspace (the kernel part is built into the kernel, see kernel/kernelsu/): the manager app and the daemon.
@@ -86,7 +86,10 @@ PARTS="system_a vendor_a product_a system_ext_a system_dlkm_a vendor_dlkm_a"
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
-have_mods() { ls usb/modules/lib/modules/*/kernel/drivers/iio/accel/hid-sensor-accel-3d.ko >/dev/null 2>&1; }
+# The module tree has to be the one built with usb/out/BOOTX64.EFI: its directory is named after the kernel's release (usb/hwdetect.sh binds
+# gbos/modules/lib/modules/$(uname -r)) and a tree from another build is rejected by the kernel (module signature, symbol CRCs).
+KREL=$(grep -a -m1 -o '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-gbos-whl+\{0,1\} (' usb/out/BOOTX64.EFI 2>/dev/null | sed 's/ ($//')
+have_mods() { [ -n "$KREL" ] && [ -f "usb/modules/lib/modules/$KREL/kernel/drivers/iio/accel/hid-sensor-accel-3d.ko" ]; }
 have_swr() { [ -f usb/patched/vulkan.swiftshader.so ]; }
 have_ksu() { [ -f usb/ksu/manager.apk ] && [ -f usb/ksu/ksud ]; }
 have_parts() { for p in $PARTS; do [ -s lapis/parts/$p.img ] || return 1; done; }
@@ -125,7 +128,8 @@ if [ ! -x kernel/out/busybox ]; then say "2/4 busybox"; sh tools/fetch_busybox.s
 
 if ! have_mods; then
   say "3/4 kernel modules and firmware"
-  fetch "$REL/$MODS" "build/dl/$MODS" "$MODS_SHA"; tar -xJf "build/dl/$MODS" -C usb
+  fetch "$REL/$MODS" "build/dl/$MODS" "$MODS_SHA"; rm -rf usb/modules; tar -xJf "build/dl/$MODS" -C usb
+  have_mods || die "the module tree in $MODS is not for this kernel (${KREL:-unknown}): usb/modules/lib/modules/ holds $(ls usb/modules/lib/modules 2>/dev/null | tr '\n' ' '). Build it with kernel/build_kernel.sh"
 else say "3/4 kernel modules: present"; fi
 if [ ! -f usb/firmware/rtl_nic/rtl8168h-2.fw ]; then
   fetch "$REL_FW/$FW" "build/dl/$FW" "$FW_SHA"; tar -xJf "build/dl/$FW" -C usb

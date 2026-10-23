@@ -40,7 +40,7 @@ else
   echo "base config: $BASE"
 fi
 
-docker run --rm -v "$VOL":/build -v "$ROOT":/host:ro -v "$W":/cfg gbos-kbuild bash -s <<EOF
+docker run --rm -i --platform linux/amd64 -v "$VOL":/build -v "$ROOT":/host:ro -v "$W":/cfg gbos-kbuild bash -s <<EOF
 set -e
 export PATH=$C/bin:\$PATH LD_LIBRARY_PATH=$C/lib:\$LD_LIBRARY_PATH
 # KernelSU reads its version from its own git checkout; the volume's files are root's, the
@@ -54,6 +54,12 @@ if [ -f /host/usb/out/BOOTX64.EFI ]; then
   [ -n "\$prev" ] && echo "\$prev" > /build/out/.version && echo "kernel build number: #\$((prev + 1))"
 fi
 cd /build/src
+# Pin the kernel release to "6.18.21-gbos-whl": without this, scripts/setlocalversion appends "+" when the tree is a (dirty) git checkout
+# and nothing when it is a tarball, so the release (and the module directory the stick needs) depended on how the sources were unpacked.
+: > .scmversion
+# ... but this kernel's scripts/setlocalversion ignores .scmversion (it prints "+" for any git checkout past the tag): make it stop there.
+sed -i 's|^\\tif ! head=\\\$(git rev-parse --verify HEAD 2>/dev/null); then|\\tif test -e "\\\$srctree/.scmversion" \\|\\| ! head=\\\$(git rev-parse --verify HEAD 2>/dev/null); then|' scripts/setlocalversion
+grep -q 'srctree/.scmversion' scripts/setlocalversion || { echo "setlocalversion patch did not apply" >&2; exit 1; }
 
 # 1. the patches
 export P=/host/kernel/isa_emu_patch
@@ -91,8 +97,7 @@ EOF
 
 # 5. the results
 mkdir -p "$ROOT/usb/out" "$ROOT/usb/kmod"
-cp /dev/null /dev/null
-docker run --rm -v "$VOL":/build -v "$ROOT":/host gbos-kbuild bash -s <<EOF
+docker run --rm -i --platform linux/amd64 -v "$VOL":/build -v "$ROOT":/host gbos-kbuild bash -s <<EOF
 set -e
 cp /build/out/arch/x86/boot/bzImage /host/usb/out/BOOTX64.EFI
 # The module tree goes to usb/modules/lib/modules/<uname -r>/, the layout the release tarball
@@ -101,6 +106,11 @@ rm -rf /host/usb/modules
 mkdir -p /host/usb/modules/lib
 cp -a /build/modroot_all/lib/modules /host/usb/modules/lib/
 rm -f /host/usb/modules/lib/modules/*/build
+# usb/hwdetect.sh binds gbos/modules/lib/modules/\$(uname -r): the directory name has to be the running kernel's release.
+rel=\$(cat /build/out/include/config/kernel.release)
+[ -f /host/usb/modules/lib/modules/\$rel/modules.dep ] || { echo "module tree is not usb/modules/lib/modules/\$rel" >&2; exit 1; }
+# Which build the tree belongs to (exported-symbol CRCs + module signing key): tools/deploy_stick.sh replaces the stick's tree when this differs.
+cat /build/out/Module.symvers /build/out/certs/signing_key.x509 | sha256sum | cut -d' ' -f1 > /host/usb/modules/lib/modules/\$rel/gbos-build-id
 # the files were written by root in the container: give them back to the user
 chown -R $(id -u):$(id -g) /host/usb/modules /host/usb/kmod /host/usb/out/BOOTX64.EFI
 for m in btusb btintel btrtl; do
@@ -108,7 +118,7 @@ for m in btusb btintel btrtl; do
   [ -n "\$f" ] && cp "\$f" /host/usb/kmod/\$m.ko
 done
 EOF
-echo "kernel: usb/out/BOOTX64.EFI ($(stat -c %s "$ROOT/usb/out/BOOTX64.EFI") bytes)"
+echo "kernel: usb/out/BOOTX64.EFI ($(wc -c < "$ROOT/usb/out/BOOTX64.EFI" | tr -d " ") bytes)"
 echo "modules: $(find "$ROOT/usb/modules" -name '*.ko' | wc -l) in usb/modules/"
 echo
 echo "Test it:  kernel/isa_emu_test/run_qemu.py usb/out/BOOTX64.EFI   (expects ISA_EMU_TEST_PASS)"

@@ -107,6 +107,9 @@ _m('PINCTRL_INTEL_PLATFORM', 'SURFACE_AGGREGATOR', 'SURFACE_AGGREGATOR_REGISTRY'
    'BATTERY_SURFACE', 'CHARGER_SURFACE', 'SURFACE_PLATFORM_PROFILE', 'SENSORS_SURFACE_FAN', 'IWLMLD',
    'SND_SOC_RT1320_SDW', 'SND_SOC_RT721_SDCA_SDW')
 GENERIC['SERIAL_8250_RUNTIME_UARTS'] = '4'
+# Intel Volume Management Device: with VMD on (many 11th gen+ laptops, no BIOS switch) the NVMe sits behind a VMD domain and is invisible
+# to the installer until this root-port driver is in the kernel (HP 14s-dq2509TU, Core i3-1115G4, 8086:9a0b).
+_y('VMD')
 # Laptop platform drivers (hotkeys, rfkill, fan/thermal, battery thresholds). The vendor menus gate the drivers.
 _y('X86_PLATFORM_DEVICES', 'X86_PLATFORM_DRIVERS_DELL', 'X86_PLATFORM_DRIVERS_HP', 'ACPI_VIDEO', 'RFKILL_INPUT')
 _m('INTEL_PMT_TELEMETRY', 'INTEL_PMT_CLASS')
@@ -140,7 +143,7 @@ _m('SND_SOC_SOF_PCI', 'SND_SOC_SOF_ACPI', 'SND_SOC_SOF_INTEL_COMMON', 'SND_SOC_S
    'SND_SOC_RT1015', 'SND_SOC_RT1015P', 'SND_SOC_TAS2562')
 
 # These must come out exactly as requested after olddefconfig.
-REQUIRED = ['DRM_I915', 'TRIM_UNUSED_KSYMS', 'MODULE_SIG_PROTECT', 'ANDROID_BINDER_IPC', 'BLK_DEV_NVME', 'KSU']
+REQUIRED = ['DRM_I915', 'TRIM_UNUSED_KSYMS', 'MODULE_SIG_PROTECT', 'ANDROID_BINDER_IPC', 'BLK_DEV_NVME', 'KSU', 'VMD']
 
 
 def parse(text):

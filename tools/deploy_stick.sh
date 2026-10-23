@@ -1,6 +1,6 @@
 #!/bin/sh
 # Fast deploy to a mounted gbOS86 stick: copies only the files that differ from usb/ (small scripts and patches), removes files the project no longer ships, verifies every copied file after a remount, ejects.
-# Takes seconds. It never touches the big/rarely changing items (super.img, firmware/, modules/, bootdisk.img), the kernel
+# Takes seconds. It never touches the big/rarely changing items (super.img, firmware/, bootdisk.img; modules/ only when it is another kernel build's), the kernel
 # (EFI partition) or the stick's own gbos.cfg; use build.sh / the image for those.
 # Usage: tools/deploy_stick.sh [--no-eject] [VOLUME]      (VOLUME defaults to /Volumes/GBOS)
 set -e
@@ -28,6 +28,16 @@ for d in patched audio installer kmod ksu; do
   [ -d "$U/$d" ] || continue
   (cd "$U" && find "$d" -type f ! -name '.DS_Store') | while read -r f; do put "$U/$f" "$f"; done
 done
+# The module tree belongs to one kernel build (directory = the kernel's release, signed with that build's key): an old tree on the stick
+# gives "no driver for anything" (i915, Wi-Fi, audio) on a newer kernel, so replace it when the build id differs. ~100 MB, only then.
+MODS=$U/modules/lib/modules
+if [ -d "$MODS" ]; then
+  R=$(ls "$MODS" | head -1)
+  if [ -n "$R" ] && ! cmp -s "$MODS/$R/gbos-build-id" "$G/modules/lib/modules/$R/gbos-build-id" 2>/dev/null; then
+    printf '  modules/ (kernel %s: the stick has %s)\n' "$R" "$(ls "$G/modules/lib/modules" 2>/dev/null | tr '\n' ' ')"
+    rm -rf "$G/modules" && cp -R "$U/modules" "$G/modules" && echo "modules/lib/modules/$R/gbos-build-id" >> "$CHANGED"
+  fi
+fi
 # the stick's files that this project no longer ships (the removed AI stand-in)
 [ -d "$G/localai" ] && { printf '  removing localai/\n'; rm -rf "$G/localai"; }
 [ -s "$CHANGED" ] || echo "  nothing to copy: the stick already matches usb/"
