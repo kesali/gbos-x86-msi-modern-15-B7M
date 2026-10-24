@@ -35,6 +35,9 @@ while [ $# -gt 0 ]; do
     --dualboot|--dual-boot) BUILD_TYPE="dualboot";;
     --target) shift; TARGET_DISK="$1";;
     --target=*) TARGET_DISK="${1#*=}";;
+    --allow-internal) EXTRA_FLAGS="$EXTRA_FLAGS --allow-internal";;
+    --allow-root) EXTRA_FLAGS="$EXTRA_FLAGS --allow-root";;
+    --reformat) EXTRA_FLAGS="$EXTRA_FLAGS --reformat";;
     --data-size) shift; DATA_GB="$1";;
     --data-size=*) DATA_GB="${1#*=}";;
     -h|--help) sed -n '2,16p' "$0"; exit 0;;
@@ -160,7 +163,8 @@ else say "    KernelSU manager + ksud: present"; fi
 if [ "$BUILD_TYPE" = "dualboot" ]; then
   [ -n "$TARGET_DISK" ] || die "Target disk required for dualboot. Pass --target /dev/sdX"
   say "4/4 installing gbOS86 in dual-boot mode onto $TARGET_DISK"
-  sudo sh tools/install_dualboot.sh --target "$TARGET_DISK" --data-size "$DATA_GB"
+  [ $DRY -eq 1 ] && EXTRA_FLAGS="$EXTRA_FLAGS --dry-run"
+  sudo sh tools/install_dualboot.sh --target "$TARGET_DISK" --data-size "$DATA_GB" $EXTRA_FLAGS
 else
   say "4/4 building the image ($BUILD_TYPE)"
   sh tools/make_gbos86_image.sh --type "$BUILD_TYPE" --data-size "$DATA_GB"

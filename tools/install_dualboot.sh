@@ -16,6 +16,9 @@ REFORMAT=0
 DRY_RUN=0
 SKIP_DOWNLOAD=0
 
+ALLOW_INTERNAL=0
+ALLOW_ROOT=0
+
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -24,14 +27,16 @@ usage() {
 Usage: sudo $0 --target <disk> [options]
 
 Options:
-  --target <disk>      Target disk device (e.g. /dev/sda, /dev/sdb). REQUIRED.
-  --efi-part <part>    EFI partition to use (default: auto-detected, e.g. /dev/sda2).
-  --sys-size <size>    Size of GBOSSYS partition (default: 10G).
-  --meta-size <size>   Size of GBOS_META partition (default: 64M).
-  --data-size <size>   Size of GBOS_DATA partition (default: 64G).
-  --reformat           Re-format existing gbOS86 partitions.
-  --dry-run            Simulate operations without writing changes.
-  -h, --help           Show this help message.
+  --target <disk>        Target disk device (e.g. /dev/sda, /dev/sdb). REQUIRED.
+  --efi-part <part>      EFI partition to use (default: auto-detected, e.g. /dev/sda2).
+  --sys-size <size>      Size of GBOSSYS partition (default: 10G).
+  --meta-size <size>     Size of GBOS_META partition (default: 64M).
+  --data-size <size>     Size of GBOS_DATA partition (default: 64G).
+  --reformat             Re-format existing gbOS86 partitions.
+  --allow-internal       Allow targeting internal NVMe drives (/dev/nvme*).
+  --allow-root           Allow targeting the disk holding the active root filesystem.
+  --dry-run              Simulate operations without writing changes.
+  -h, --help             Show this help message.
 
 Example:
   sudo $0 --target /dev/sda
@@ -47,6 +52,8 @@ while [ $# -gt 0 ]; do
     --meta-size) META_SIZE="$2"; shift 2;;
     --data-size) DATA_SIZE="$2"; shift 2;;
     --reformat) REFORMAT=1; shift;;
+    --allow-internal) ALLOW_INTERNAL=1; shift;;
+    --allow-root) ALLOW_ROOT=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
     -h|--help) usage 0;;
     *) die "Unknown argument: $1";;
@@ -56,10 +63,27 @@ done
 [ -n "$TARGET_DISK" ] || usage 1
 [ -b "$TARGET_DISK" ] || die "$TARGET_DISK is not a valid block device."
 
-# Safety guard against accidental NVMe root wipe
+# Root privileges check
 if [ "$(id -u)" -ne 0 ]; then
   die "This script requires root privileges. Please run with sudo."
 fi
+
+# Safety guard 1: Check if target disk holds the running root filesystem
+ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+if [ -n "$ROOT_DEV" ] && echo "$ROOT_DEV" | grep -q "${TARGET_DISK##*/}"; then
+  if [ $ALLOW_ROOT -eq 0 ]; then
+    die "$TARGET_DISK holds your active host root filesystem ($ROOT_DEV). To prevent accidents, pass --allow-root if you intentionally wish to partition free space on this drive."
+  fi
+fi
+
+# Safety guard 2: Check if target disk is internal NVMe (often Windows)
+case "$TARGET_DISK" in
+  *nvme*)
+    if [ $ALLOW_INTERNAL -eq 0 ]; then
+      die "$TARGET_DISK appears to be an internal NVMe SSD. To protect internal Windows/Linux drives, pass --allow-internal to confirm."
+    fi
+    ;;
+esac
 
 say "Target disk: $TARGET_DISK"
 
@@ -99,31 +123,36 @@ if [ -n "$SYS_PART" ] && [ -n "$META_PART" ] && [ -n "$DATA_PART" ]; then
   ALREADY_PARTITIONED=1
 else
   ALREADY_PARTITIONED=0
-  SYS_PART="${P_PREFIX}3"
-  META_PART="${P_PREFIX}4"
-  DATA_PART="${P_PREFIX}5"
 fi
 
 if [ $DRY_RUN -eq 1 ]; then
-  say "[DRY RUN] Would install gbOS86 on $TARGET_DISK without wiping existing OS partitions."
+  say "[DRY RUN] Target: $TARGET_DISK (partitions present: $(lsblk -no NAME "$TARGET_DISK" 2>/dev/null | tr '\n' ' '))"
+  say "[DRY RUN] Would allocate $SYS_SIZE for GBOSSYS, $META_SIZE for GBOS_META, and $DATA_SIZE for GBOS_DATA into free space."
   exit 0
 fi
 
 # Partition if not already present
 if [ $ALREADY_PARTITIONED -eq 0 ]; then
   command -v sgdisk >/dev/null 2>&1 || die "sgdisk is required to partition $TARGET_DISK non-destructively."
-  say "Creating gbOS86 partitions non-destructively..."
+  say "Creating gbOS86 partitions non-destructively into unallocated free space..."
+  # '0' tells sgdisk to pick the next unused partition number automatically
   sgdisk \
-    -n 3:0:+"$SYS_SIZE"  -t 3:0700 -c 3:"GBOSSYS" \
-    -n 4:0:+"$META_SIZE" -t 4:8300 -c 4:"GBOS_META" \
-    -n 5:0:+"$DATA_SIZE" -t 5:8300 -c 5:"GBOS_DATA" \
-    "$TARGET_DISK"
+    -n 0:0:+"$SYS_SIZE"  -t 0:0700 -c 0:"GBOSSYS" \
+    -n 0:0:+"$META_SIZE" -t 0:8300 -c 0:"GBOS_META" \
+    -n 0:0:+"$DATA_SIZE" -t 0:8300 -c 0:"GBOS_DATA" \
+    "$TARGET_DISK" || die "sgdisk failed to create partitions. Check if sufficient unallocated free space exists on $TARGET_DISK."
   partprobe "$TARGET_DISK" 2>/dev/null || sleep 2
+
+  SYS_PART=$(lsblk -rn -o NAME,LABEL "$TARGET_DISK" 2>/dev/null | awk '$2=="GBOSSYS"{print "/dev/"$1; exit}')
+  META_PART=$(lsblk -rn -o NAME,LABEL "$TARGET_DISK" 2>/dev/null | awk '$2=="GBOS_META"{print "/dev/"$1; exit}')
+  DATA_PART=$(lsblk -rn -o NAME,LABEL "$TARGET_DISK" 2>/dev/null | awk '$2=="GBOS_DATA"{print "/dev/"$1; exit}')
+
+  [ -n "$SYS_PART" ] && [ -n "$META_PART" ] && [ -n "$DATA_PART" ] || die "Could not resolve newly created partition device names on $TARGET_DISK"
 fi
 
 # Format partitions
 if [ $ALREADY_PARTITIONED -eq 0 ] || [ $REFORMAT -eq 1 ]; then
-  say "Formatting partitions..."
+  say "Formatting partitions ($SYS_PART, $META_PART, $DATA_PART)..."
   mkfs.vfat -F 32 -n GBOSSYS "$SYS_PART"
   mkfs.ext4 -F -L GBOS_META "$META_PART"
   mkfs.ext4 -F -O verity -L GBOS_DATA "$DATA_PART"
