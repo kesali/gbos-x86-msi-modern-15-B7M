@@ -73,8 +73,12 @@ tool sfdisk --version > /dev/null 2>&1 || die "partitioning tools in gbos/instal
 # ACTION=update in gbos.cfg: don't erase anything. Save the installed system's last 3 boots of logs
 # to this boot's log dir on the stick, then bring its gbos/ files and kernel up to the stick's.
 # GBOS_DATA and GBOS_META (apps, accounts, settings) are not touched.
-NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null); NEFI=$(findfs LABEL=GBOS_EFI 2>/dev/null); NDATA=$(findfs LABEL=GBOS_DATA 2>/dev/null)
-if [ -z "$ACTION" ] && [ -n "$NSYS" ] && [ -n "$NEFI" ] && [ -n "$NDATA" ]; then
+NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null)
+NEFI=$(findfs LABEL=GBOS_EFI 2>/dev/null)
+[ -n "$NEFI" ] || NEFI=$(findfs LABEL=EFI 2>/dev/null)
+[ -n "$NEFI" ] || NEFI=$(findfs LABEL=SYSTEM 2>/dev/null)
+NDATA=$(findfs LABEL=GBOS_DATA 2>/dev/null)
+if [ -z "$ACTION" ] && [ -n "$NSYS" ] && [ -n "$NDATA" ]; then
   # An install exists: never erase it just because the stick was left in. Ask.
   say "Found an existing gbOS86 install on the internal disk."
   say "  1) Update it: keep apps, accounts and settings; save its logs to this stick"
@@ -101,11 +105,14 @@ if [ "$ACTION" = logs ]; then
   poweroff -f
 fi
 if [ "${ACTION:-install}" = update ]; then
-  NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null); NEFI=$(findfs LABEL=GBOS_EFI 2>/dev/null)
-  [ -n "$NSYS" ] && [ -n "$NEFI" ] || die "no gbos install on the internal disk (GBOSSYS/GBOS_EFI not found)"
+  NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null)
+  NEFI=$(findfs LABEL=GBOS_EFI 2>/dev/null)
+  [ -n "$NEFI" ] || NEFI=$(findfs LABEL=EFI 2>/dev/null)
+  [ -n "$NEFI" ] || NEFI=$(findfs LABEL=SYSTEM 2>/dev/null)
+  [ -n "$NSYS" ] && [ -n "$NEFI" ] || die "no gbos install on the internal disk (GBOSSYS/EFI not found)"
   mkdir -p /mnt/nsys /mnt/nefi
   mount -t vfat -o flush $NSYS /mnt/nsys || die "mount GBOSSYS failed"
-  mount -t vfat $NEFI /mnt/nefi || die "mount GBOS_EFI failed"
+  mount -t vfat $NEFI /mnt/nefi || die "mount EFI failed"
   say "Saving the installed system's logs to the stick (gbos/logs/boot-$N/nvme-logs) ..."
   save_logs /mnt/nsys/gbos 3
   say "Updating the installed system (data is not touched) ..."
@@ -118,12 +125,18 @@ if [ "${ACTION:-install}" = update ]; then
     case " $STAMPED " in *" $d "*) if stamp_same $d; then SKIP="$SKIP $d"; say "  $d/ unchanged, skipped"; continue; fi;; esac
     say "  $d/"; rm -rf /mnt/nsys/gbos/$d; cp -r $G/$d /mnt/nsys/gbos/ || die "copy $d/ failed"
   done
-  cmp -s $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || { say "  kernel"; cp $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || die "copy kernel failed"; }
+  if [ -f /mnt/nefi/EFI/gbos86/BOOTX64.EFI ]; then
+    cmp -s $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || { say "  kernel (EFI/gbos86)"; cp $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || die "copy kernel failed"; }
+  fi
+  if [ -f /mnt/nefi/EFI/BOOT/BOOTX64.EFI ] || [ ! -f /mnt/nefi/EFI/gbos86/BOOTX64.EFI ]; then
+    cmp -s $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || { say "  kernel"; mkdir -p /mnt/nefi/EFI/BOOT && cp $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || die "copy kernel failed"; }
+  fi
   # Settings such as DENSITY follow the stick; the installed copy always boots normally.
   write_installed_cfg
   sync; echo 3 > /proc/sys/vm/drop_caches
   say "Verifying ..."
-  check $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI
+  if [ -f /mnt/nefi/EFI/gbos86/BOOTX64.EFI ]; then check $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI; fi
+  if [ -f /mnt/nefi/EFI/BOOT/BOOTX64.EFI ]; then check $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI; fi
   for f in $FILES; do is_skipped $f || check $G/$f /mnt/nsys/gbos/$f; done
   for d in $DIRS; do is_skipped $d && continue; (cd $G && find $d -type f) | while read f; do check $G/$f /mnt/nsys/gbos/$f; done || exit 1; done || die "verify failed"
   for i in $STAMPED; do stamp_save $i || say "  (could not save the update stamp for $i; the next update will do a full compare)"; done
