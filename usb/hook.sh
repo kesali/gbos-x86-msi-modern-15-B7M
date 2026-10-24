@@ -198,6 +198,13 @@ if [ -f $G/bootdisk.img ]; then
   log "hook: bootdisk on loop6: $(ls /sys/class/block | grep loop6p | tr '\n' ' ')"
 fi
 
+# Loop-mount metadata.img if physical GBOS_META partition is absent
+if [ -z "$(findfs LABEL=GBOS_META 2>/dev/null)" ] && [ -f "$G/metadata.img" ]; then
+  losetup /dev/loop7 "$G/metadata.img" 2>/dev/null
+  mkdir -p /new/metadata
+  mount -t ext4 -o noatime /dev/loop7 /new/metadata 2>/dev/null && log "hook: mounted metadata.img on loop7 -> /new/metadata"
+fi
+
 # Fake crossystem (no ChromeOS firmware on this laptop)
 [ -f $G/crossystem ] && mount --bind $G/crossystem /new/vendor/bin/crossystem && log "hook: crossystem faked"
 
@@ -606,6 +613,9 @@ fi
 # apgetty (UART shell) has no UART configured here and crash-loops
 : > /tmp/empty.rc && mount --bind /tmp/empty.rc /new/system_ext/etc/init/apgetty.rc && log "hook: apgetty disabled"
 mount --bind /tmp/empty.rc /new/vendor/etc/init/hal_desktop_charge_control_default.rc 2>/dev/null && log "hook: charge_control disabled"
+for rc in /new/system/etc/init/update_engine.rc /new/system/etc/init/update_engine_sideload.rc; do
+  [ -f "$rc" ] && mount --bind /tmp/empty.rc "$rc" 2>/dev/null && log "hook: $(basename $rc) disabled"
+done
 log "hook: kvm: $(ls /sys/class/misc | grep -E 'kvm|vhost' | tr '\n' ' ')"
 
 # KVM trace -> kvmtrace.txt: guest exceptions / failed emulation / triple faults, to see why the

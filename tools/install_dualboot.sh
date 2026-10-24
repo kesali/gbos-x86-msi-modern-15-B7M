@@ -163,6 +163,14 @@ MNT_SYS=$(mktemp -d)
 trap 'umount "$MNT_SYS" 2>/dev/null; rmdir "$MNT_SYS" 2>/dev/null' EXIT INT TERM
 mount "$SYS_PART" "$MNT_SYS"
 
+# Create loopback metadata.img if physical GBOS_META partition is absent
+if [ -z "$META_PART" ] && [ ! -f "$MNT_SYS/gbos/metadata.img" ]; then
+  say "Creating loopback metadata.img (64 MB ext4) inside GBOSSYS..."
+  mkdir -p "$MNT_SYS/gbos"
+  dd if=/dev/zero of="$MNT_SYS/gbos/metadata.img" bs=1M count=64 status=none
+  mkfs.ext4 -F -q -L GBOS_META "$MNT_SYS/gbos/metadata.img"
+fi
+
 say "Copying system files to $SYS_PART (GBOSSYS)..."
 mkdir -p "$MNT_SYS/EFI/BOOT" "$MNT_SYS/gbos/logs"
 [ -f "$U/out/BOOTX64.EFI" ] && cp "$U/out/BOOTX64.EFI" "$MNT_SYS/EFI/BOOT/BOOTX64.EFI"
