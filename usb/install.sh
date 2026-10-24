@@ -224,13 +224,44 @@ say "Target disk: $TD ($KIND)"
 say "  model:  $MODEL"
 say "  serial: $SERIAL"
 say "  size:   ${GB} GB"
-say "  current partitions: $(ls /sys/block/$T | grep "^${T}p\?[0-9]" | tr '\n' ' ')"
 say ""
 
-CURRENT_PARTS=$(ls /sys/block/$T | grep "^${T}p\?[0-9]" | tr '\n' ' ')
+CURRENT_PARTS=$(ls /sys/block/$T | grep "^${T}p\?[0-9]")
 INSTALL_MODE=clean
 if [ -n "$CURRENT_PARTS" ]; then
-  say "Existing partitions detected on $TD: $CURRENT_PARTS"
+  say "Current partition layout on $TD:"
+  part_sectors=0
+  for p in $CURRENT_PARTS; do
+    sz_sec=$(cat /sys/block/$T/$p/size 2>/dev/null || echo 0)
+    part_sectors=$(( part_sectors + sz_sec ))
+    sz_mb=$(( sz_sec / 2048 ))
+    if [ $sz_mb -ge 1024 ]; then
+      sz_str="$(( sz_mb / 1024 )) GB"
+    else
+      sz_str="${sz_mb} MB"
+    fi
+    info=$(tool blkid /dev/$p 2>/dev/null)
+    lbl=$(echo "$info" | sed -n 's/.*LABEL="\([^"]*\)".*/\1/p')
+    fst=$(echo "$info" | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+    extra=""
+    [ -n "$fst" ] && extra="[$fst]"
+    [ -n "$lbl" ] && extra="$extra \"$lbl\""
+    say "  /dev/$p : $sz_str $extra"
+  done
+
+  # Calculate unallocated free space
+  tot_sec=$(cat /sys/block/$T/size 2>/dev/null || echo 0)
+  free_sec=$(( tot_sec - part_sectors ))
+  if [ $free_sec -gt 0 ]; then
+    free_mb=$(( free_sec / 2048 ))
+    if [ $free_mb -ge 1024 ]; then
+      free_str="$(( free_mb / 1024 )) GB"
+    else
+      free_str="${free_mb} MB"
+    fi
+    say "  [Unallocated free space]: $free_str"
+  fi
+  say ""
   say "Choose installation mode:"
   say "  1) Dual-Boot: keep existing OS (Windows/Linux); install into free space or GBOS partitions"
   say "  2) Full clean install: ERASE ENTIRE DISK (Windows, Linux, files, all partitions)"
