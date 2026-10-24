@@ -208,6 +208,16 @@ if [ -f "$U/out/BOOTX64.EFI" ]; then
 fi
 umount "$MNT_EFI" && rmdir "$MNT_EFI"
 
+# Register in motherboard UEFI NVRAM if efibootmgr is available
+if command -v efibootmgr >/dev/null 2>&1 && [ -d /sys/firmware/efi/efivars ]; then
+  EFI_NUM=$(echo "$EFI_PART" | grep -o '[0-9]*$')
+  EFI_DISK=$(echo "$EFI_PART" | sed -E 's/p?[0-9]+$//')
+  if ! efibootmgr 2>/dev/null | grep -q "Googlebook OS"; then
+    say "Registering 'Googlebook OS' in motherboard UEFI NVRAM..."
+    efibootmgr -c -d "$EFI_DISK" -p "$EFI_NUM" -L "Googlebook OS" -l '\EFI\gbos86\BOOTX64.EFI' >/dev/null 2>&1 || true
+  fi
+fi
+
 # Configure GRUB 40_custom if running on Linux with GRUB
 if [ -d /etc/grub.d ] && command -v update-grub >/dev/null 2>&1; then
   SYS_UUID=$(blkid -s UUID -o value "$SYS_PART" 2>/dev/null || true)
