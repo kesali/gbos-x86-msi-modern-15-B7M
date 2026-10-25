@@ -73,8 +73,21 @@ tool sfdisk --version > /dev/null 2>&1 || die "partitioning tools in gbos/instal
 # ACTION=update in gbos.cfg: don't erase anything. Save the installed system's last 3 boots of logs
 # to this boot's log dir on the stick, then bring its gbos/ files and kernel up to the stick's.
 # GBOS_DATA and GBOS_META (apps, accounts, settings) are not touched.
-NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null); NEFI=$(findfs LABEL=GBOS_EFI 2>/dev/null); NDATA=$(findfs LABEL=GBOS_DATA 2>/dev/null)
-if [ -z "$ACTION" ] && [ -n "$NSYS" ] && [ -n "$NEFI" ] && [ -n "$NDATA" ]; then
+# The EFI partition of the internal disk that holds $1 (GBOSSYS). The stick's own EFI partition is also labelled EFI, so a label lookup
+# can return the wrong one: take the EFI system partition (GPT type) from the same disk, labels only as a fallback.
+internal_efi() {
+  [ -b "$1" ] || return 0
+  _d=/dev/$(basename "$(readlink -f /sys/class/block/$(basename $1)/..)")
+  _e=$(tool sfdisk -d $_d 2>/dev/null | awk 'toupper($0) ~ /TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B/ {print $1; exit}')
+  [ -n "$_e" ] || _e=$(findfs LABEL=GBOS_EFI 2>/dev/null)
+  [ -n "$_e" ] || _e=$(findfs LABEL=EFI 2>/dev/null)
+  [ -n "$_e" ] || _e=$(findfs LABEL=SYSTEM 2>/dev/null)
+  echo "$_e"
+}
+NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null)
+NEFI=$(internal_efi $NSYS)
+NDATA=$(findfs LABEL=GBOS_DATA 2>/dev/null)
+if [ -z "$ACTION" ] && [ -n "$NSYS" ] && [ -n "$NDATA" ]; then
   # An install exists: never erase it just because the stick was left in. Ask.
   say "Found an existing gbOS86 install on the internal disk."
   say "  1) Update it: keep apps, accounts and settings; save its logs to this stick"
@@ -101,11 +114,16 @@ if [ "$ACTION" = logs ]; then
   poweroff -f
 fi
 if [ "${ACTION:-install}" = update ]; then
-  NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null); NEFI=$(findfs LABEL=GBOS_EFI 2>/dev/null)
-  [ -n "$NSYS" ] && [ -n "$NEFI" ] || die "no gbos install on the internal disk (GBOSSYS/GBOS_EFI not found)"
+  NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null)
+  NEFI=$(internal_efi $NSYS)
+  [ -n "$NSYS" ] && [ -n "$NEFI" ] || die "no gbos install on the internal disk (GBOSSYS/EFI not found)"
   mkdir -p /mnt/nsys /mnt/nefi
   mount -t vfat -o flush $NSYS /mnt/nsys || die "mount GBOSSYS failed"
-  mount -t vfat $NEFI /mnt/nefi || die "mount GBOS_EFI failed"
+  mount -t vfat $NEFI /mnt/nefi || die "mount EFI failed"
+  # A dual-boot install keeps its kernel in the machine's own EFI partition as EFI/gbos86/BOOTX64.EFI. An EFI partition that is not ours
+  # (not labelled GBOS_EFI) without that file is some other OS's: never write to it.
+  SHARED_EFI=0; [ -f /mnt/nefi/EFI/gbos86/BOOTX64.EFI ] && SHARED_EFI=1
+  [ "$NEFI" = "$(findfs LABEL=GBOS_EFI 2>/dev/null)" ] || [ $SHARED_EFI = 1 ] || die "$NEFI is not a gbOS86 EFI partition (no EFI/gbos86/BOOTX64.EFI); nothing was changed"
   say "Saving the installed system's logs to the stick (gbos/logs/boot-$N/nvme-logs) ..."
   save_logs /mnt/nsys/gbos 3
   say "Updating the installed system (data is not touched) ..."
@@ -118,12 +136,16 @@ if [ "${ACTION:-install}" = update ]; then
     case " $STAMPED " in *" $d "*) if stamp_same $d; then SKIP="$SKIP $d"; say "  $d/ unchanged, skipped"; continue; fi;; esac
     say "  $d/"; rm -rf /mnt/nsys/gbos/$d; cp -r $G/$d /mnt/nsys/gbos/ || die "copy $d/ failed"
   done
-  cmp -s $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || { say "  kernel"; cp $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || die "copy kernel failed"; }
+  if [ $SHARED_EFI = 1 ]; then
+    cmp -s $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || { say "  kernel (EFI/gbos86)"; cp $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || die "copy kernel failed"; }
+  else
+    cmp -s $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || { say "  kernel"; cp $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || die "copy kernel failed"; }
+  fi
   # Settings such as DENSITY follow the stick; the installed copy always boots normally.
   write_installed_cfg
   sync; echo 3 > /proc/sys/vm/drop_caches
   say "Verifying ..."
-  check $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI
+  if [ $SHARED_EFI = 1 ]; then check $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI; else check $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI; fi
   for f in $FILES; do is_skipped $f || check $G/$f /mnt/nsys/gbos/$f; done
   for d in $DIRS; do is_skipped $d && continue; (cd $G && find $d -type f) | while read f; do check $G/$f /mnt/nsys/gbos/$f; done || exit 1; done || die "verify failed"
   for i in $STAMPED; do stamp_save $i || say "  (could not save the update stamp for $i; the next update will do a full compare)"; done
@@ -211,64 +233,181 @@ say "Target disk: $TD ($KIND)"
 say "  model:  $MODEL"
 say "  serial: $SERIAL"
 say "  size:   ${GB} GB"
-say "  current partitions: $(ls /sys/block/$T | grep "^${T}p\?[0-9]" | tr '\n' ' ')"
 say ""
-say "EVERYTHING ON THIS DISK WILL BE ERASED (Windows, files, all partitions)."
-say "To continue, type the serial number exactly as shown. Anything else cancels."
-CONFIRM=$(sed -n 's/.*gbos_install_confirm=\([^ ]*\).*/\1/p' /proc/cmdline)
-if [ -n "$CONFIRM" ]; then
-  REPLY=$CONFIRM; say "(serial taken from the kernel command line: $REPLY)"
-else
-  ask "serial> "
-fi
-[ "$REPLY" = "$SERIAL" ] || halt_here "Cancelled. Nothing was written to $TD."
 
-# Keep the old install's recent logs (best effort) before they're erased.
-if [ -n "$NSYS" ] && mkdir -p /mnt/oldsys && mount -t vfat -o ro $NSYS /mnt/oldsys 2>/dev/null; then
-  mkdir -p $L/nvme-logs
-  for b in $(ls /mnt/oldsys/gbos/logs 2>/dev/null | sort -t- -k2 -n | tail -3); do cp -r /mnt/oldsys/gbos/logs/$b $L/nvme-logs/ 2>/dev/null; done
-  say "Saved the old install's logs to gbos/logs/boot-$N/nvme-logs on the stick."
-  umount /mnt/oldsys
+CURRENT_PARTS=$(ls /sys/block/$T | grep "^${T}p\?[0-9]")
+INSTALL_MODE=clean
+free_mb=0
+if [ -n "$CURRENT_PARTS" ]; then
+  say "Current partition layout on $TD:"
+  part_sectors=0
+  for p in $CURRENT_PARTS; do
+    sz_sec=$(cat /sys/block/$T/$p/size 2>/dev/null || echo 0)
+    part_sectors=$(( part_sectors + sz_sec ))
+    sz_mb=$(( sz_sec / 2048 ))
+    if [ $sz_mb -ge 1024 ]; then
+      sz_str="$(( sz_mb / 1024 )) GB"
+    else
+      sz_str="${sz_mb} MB"
+    fi
+    info=$(tool blkid /dev/$p 2>/dev/null)
+    lbl=$(echo "$info" | sed -n 's/.*LABEL="\([^"]*\)".*/\1/p')
+    fst=$(echo "$info" | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+    extra=""
+    [ -n "$fst" ] && extra="[$fst]"
+    [ -n "$lbl" ] && extra="$extra \"$lbl\""
+    say "  /dev/$p : $sz_str $extra"
+  done
+
+  # Calculate unallocated free space
+  tot_sec=$(cat /sys/block/$T/size 2>/dev/null || echo 0)
+  free_sec=$(( tot_sec - part_sectors ))
+  if [ $free_sec -gt 0 ]; then
+    free_mb=$(( free_sec / 2048 ))
+    if [ $free_mb -ge 1024 ]; then
+      free_str="$(( free_mb / 1024 )) GB"
+    else
+      free_str="${free_mb} MB"
+    fi
+    say "  [Unallocated free space]: about $free_str"
+  fi
+  say ""
+  say "Choose installation mode:"
+  say "  1) Dual-Boot: keep existing OS (Windows/Linux); install into free space or GBOS partitions"
+  say "  2) Full clean install: ERASE ENTIRE DISK (Windows, Linux, files, all partitions)"
+  say "  anything else: cancel"
+  # GBOS_INSTALL_MODE=dualboot|clean in gbos.cfg answers this question (unattended and QEMU tests); the serial is asked either way.
+  case "$GBOS_INSTALL_MODE" in dualboot|clean) REPLY=$GBOS_INSTALL_MODE; say "(mode taken from gbos.cfg: $REPLY)";; *) ask "choice> ";; esac
+  case "$REPLY" in
+    1|dualboot|dual-boot) INSTALL_MODE=dualboot;;
+    2|clean|erase) INSTALL_MODE=clean;;
+    *) halt_here "Cancelled. Nothing was written to $TD.";;
+  esac
 fi
 
-say ""
-say "Erasing and partitioning $TD ..."
-for p in $(ls /sys/block/$T | grep "^${T}p\?[0-9]"); do umount /dev/$p 2>/dev/null; done
-# Clear old signatures at both ends (the backup GPT lives at the end).
-dd if=/dev/zero of=$TD bs=1M count=16 conv=fsync 2>/dev/null
-dd if=/dev/zero of=$TD bs=1M count=16 seek=$(( SIZE / 1048576 - 16 )) conv=fsync 2>/dev/null
-tool sfdisk --wipe always --wipe-partitions always $TD >> $L/install.log 2>&1 <<EOF || die "sfdisk failed"
+if [ "$INSTALL_MODE" = clean ]; then
+  say ""
+  say "EVERYTHING ON THIS DISK WILL BE ERASED (Windows, files, all partitions)."
+  say "To continue, type the serial number exactly as shown. Anything else cancels."
+  CONFIRM=$(sed -n 's/.*gbos_install_confirm=\([^ ]*\).*/\1/p' /proc/cmdline)
+  if [ -n "$CONFIRM" ]; then
+    REPLY=$CONFIRM; say "(serial taken from the kernel command line: $REPLY)"
+  else
+    ask "serial> "
+  fi
+  [ "$REPLY" = "$SERIAL" ] || halt_here "Cancelled. Nothing was written to $TD."
+
+  # Keep the old install's recent logs (best effort) before they're erased.
+  if [ -n "$NSYS" ] && mkdir -p /mnt/oldsys && mount -t vfat -o ro $NSYS /mnt/oldsys 2>/dev/null; then
+    mkdir -p $L/nvme-logs
+    for b in $(ls /mnt/oldsys/gbos/logs 2>/dev/null | sort -t- -k2 -n | tail -3); do cp -r /mnt/oldsys/gbos/logs/$b $L/nvme-logs/ 2>/dev/null; done
+    say "Saved the old install's logs to gbos/logs/boot-$N/nvme-logs on the stick."
+    umount /mnt/oldsys
+  fi
+
+  say ""
+  say "Erasing and partitioning $TD ..."
+  for p in $(ls /sys/block/$T | grep "^${T}p\?[0-9]"); do umount /dev/$p 2>/dev/null; done
+  # Clear old signatures at both ends (the backup GPT lives at the end).
+  dd if=/dev/zero of=$TD bs=1M count=16 conv=fsync 2>/dev/null
+  dd if=/dev/zero of=$TD bs=1M count=16 seek=$(( SIZE / 1048576 - 16 )) conv=fsync 2>/dev/null
+  tool sfdisk --wipe always --wipe-partitions always $TD >> $L/install.log 2>&1 <<EOF || die "sfdisk failed"
 label: gpt
 size=512MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="GBOS_EFI"
 size=8GiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="GBOSSYS"
 size=64MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="GBOS_META"
 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="GBOS_DATA"
 EOF
-blockdev --rereadpt $TD 2>/dev/null; sleep 2; mdev -s
-case $T in *[0-9]) P=${TD}p;; *) P=$TD;; esac   # nvme0n1p1, mmcblk0p1, sda1
-for i in 1 2 3 4; do [ -b $P$i ] || { sleep 2; mdev -s; }; [ -b $P$i ] || die "partition $P$i did not appear"; done
-tool sfdisk -l $TD >> $L/install.log 2>&1
+  blockdev --rereadpt $TD 2>/dev/null; sleep 2; mdev -s
+  case $T in *[0-9]) P=${TD}p;; *) P=$TD;; esac   # nvme0n1p1, mmcblk0p1, sda1
+  for i in 1 2 3 4; do [ -b $P$i ] || { sleep 2; mdev -s; }; [ -b $P$i ] || die "partition $P$i did not appear"; done
+  tool sfdisk -l $TD >> $L/install.log 2>&1
 
-say "Formatting ..."
-tool mkfs.fat -F 32 -n GBOS_EFI ${P}1 >> $L/install.log 2>&1 || die "mkfs GBOS_EFI failed"
-tool mkfs.fat -F 32 -n GBOSSYS ${P}2 >> $L/install.log 2>&1 || die "mkfs GBOSSYS failed"
-# No 'encrypt' feature: vold then behaves as it does on tmpfs (no fscrypt). GBOS_DATA gets 'verity' (fs-verity): without it Play Store
-# updates fail with INSTALL_FAILED_BAD_SIGNATURE ("Failed to enable fs-verity", issue 17). An install made before this: tune2fs -O verity on GBOS_DATA.
-# mke2fs discards the whole partition first (fast on real NVMe/eMMC). QEMU's emulated eMMC "erases" by really writing 0xFF over the range,
-# so a test run (gbos_install_confirm= on the command line, QEMU only) skips it; the 25 GB data partition would otherwise need 25 GB of host disk.
-NODISCARD=; [ -n "$CONFIRM" ] && NODISCARD="-E nodiscard"
-tool mke2fs -F -q -t ext4 $NODISCARD -L GBOS_META ${P}3 >> $L/install.log 2>&1 || die "mkfs GBOS_META failed"
-tool mke2fs -F -q -t ext4 $NODISCARD -L GBOS_DATA -m 0 -O verity ${P}4 >> $L/install.log 2>&1 || die "mkfs GBOS_DATA failed"
-tool e2fsck -fn ${P}3 >> $L/install.log 2>&1 || die "fsck GBOS_META failed"
-tool e2fsck -fn ${P}4 >> $L/install.log 2>&1 || die "fsck GBOS_DATA failed"
+  say "Formatting ..."
+  tool mkfs.fat -F 32 -n GBOS_EFI ${P}1 >> $L/install.log 2>&1 || die "mkfs GBOS_EFI failed"
+  tool mkfs.fat -F 32 -n GBOSSYS ${P}2 >> $L/install.log 2>&1 || die "mkfs GBOSSYS failed"
+  NODISCARD=; [ -n "$CONFIRM" ] && NODISCARD="-E nodiscard"
+  tool mke2fs -F -q -t ext4 $NODISCARD -L GBOS_META ${P}3 >> $L/install.log 2>&1 || die "mkfs GBOS_META failed"
+  tool mke2fs -F -q -t ext4 $NODISCARD -L GBOS_DATA -m 0 -O verity ${P}4 >> $L/install.log 2>&1 || die "mkfs GBOS_DATA failed"
+  tool e2fsck -fn ${P}3 >> $L/install.log 2>&1 || die "fsck GBOS_META failed"
+  tool e2fsck -fn ${P}4 >> $L/install.log 2>&1 || die "fsck GBOS_DATA failed"
+  TARGET_EFI=${P}1
+  TARGET_SYS=${P}2
+else
+  # Dual-boot: add GBOSSYS + GBOS_DATA in the disk's free space and put the kernel in the existing EFI system partition under EFI/gbos86/.
+  # Nothing that exists is erased, reformatted or overwritten; everything is checked BEFORE the first write.
+  say ""
+  say "Dual-boot on $TD (existing partitions are kept) ..."
+  [ -z "$(findfs LABEL=GBOSSYS 2>/dev/null)$(findfs LABEL=GBOS_DATA 2>/dev/null)" ] \
+    || die "a gbOS86 install already exists on this machine: choose Update (keeps your data) or a full clean install, never a second dual-boot"
+  tool sfdisk -d $TD 2>/dev/null | grep -q '^label: gpt' || die "dual-boot needs a GPT disk; $TD is not"
+  # The EFI system partition: GPT type first (Windows labels it "SYSTEM", "ESP", "EFI" or nothing), the usual labels as a fallback.
+  TARGET_EFI=$(tool sfdisk -d $TD 2>/dev/null | awk 'toupper($0) ~ /TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B/ {print $1; exit}')
+  [ -n "$TARGET_EFI" ] || TARGET_EFI=$(findfs LABEL=EFI 2>/dev/null)
+  [ -n "$TARGET_EFI" ] || TARGET_EFI=$(findfs LABEL=SYSTEM 2>/dev/null)
+  [ -n "$TARGET_EFI" ] && [ -b "$TARGET_EFI" ] || die "no EFI system partition found on $TD"
+  mkdir -p /mnt/nefi
+  mount -t vfat -o ro $TARGET_EFI /mnt/nefi || die "cannot mount the EFI system partition $TARGET_EFI"
+  efi_free_kb=$(df -k /mnt/nefi | awk 'NR==2{print $4}'); umount /mnt/nefi
+  [ "${efi_free_kb:-0}" -ge 45000 ] || die "the EFI system partition $TARGET_EFI has only $(( ${efi_free_kb:-0} / 1024 )) MB free; the kernel needs 40 MB"
+  [ $free_mb -ge 17000 ] || die "only about $(( free_mb / 1024 )) GB of unallocated space on $TD; dual-boot needs 17 GB (8 GB system + 8 GB data at least). Shrink a partition in Windows/Linux first."
+
+  say "This will add two partitions in the unallocated space (about $(( free_mb / 1024 )) GB): GBOSSYS (8 GiB) and GBOS_DATA (the rest)."
+  say "Nothing existing is erased or reformatted. The kernel goes to $TARGET_EFI as EFI/gbos86/BOOTX64.EFI (no other file there is touched)."
+  say "To continue, type the serial number exactly as shown. Anything else cancels."
+  CONFIRM=$(sed -n 's/.*gbos_install_confirm=\([^ ]*\).*/\1/p' /proc/cmdline)
+  if [ -n "$CONFIRM" ]; then
+    REPLY=$CONFIRM; say "(serial taken from the kernel command line: $REPLY)"
+  else
+    ask "serial> "
+  fi
+  [ "$REPLY" = "$SERIAL" ] || halt_here "Cancelled. Nothing was written to $TD."
+
+  tool sfdisk --append $TD >> $L/install.log 2>&1 <<EOF || die "sfdisk failed to add the partitions (see install.log); the disk's existing partitions were not changed"
+size=8GiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="GBOSSYS"
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="GBOS_DATA"
+EOF
+  blockdev --rereadpt $TD 2>/dev/null; sleep 2; mdev -s
+  for i in 1 2 3 4 5; do
+    # The new partitions have no filesystem yet, so look them up by GPT name.
+    PT=$(tool sfdisk -d $TD 2>/dev/null)
+    TARGET_SYS=$(echo "$PT" | awk '/name="GBOSSYS"/ {print $1; exit}'); TARGET_DATA=$(echo "$PT" | awk '/name="GBOS_DATA"/ {print $1; exit}')
+    [ -b "$TARGET_SYS" ] && [ -b "$TARGET_DATA" ] && break
+    sleep 2; mdev -s
+  done
+  [ -n "$TARGET_SYS" ] && [ -b "$TARGET_SYS" ] || die "GBOSSYS partition did not appear on $TD"
+  [ -n "$TARGET_DATA" ] && [ -b "$TARGET_DATA" ] || die "GBOS_DATA partition did not appear on $TD"
+
+  say "Formatting the new partitions GBOSSYS ($TARGET_SYS) and GBOS_DATA ($TARGET_DATA) ..."
+  tool mkfs.fat -F 32 -n GBOSSYS $TARGET_SYS >> $L/install.log 2>&1 || die "mkfs GBOSSYS failed"
+  NODISCARD=; [ -n "$CONFIRM" ] && NODISCARD="-E nodiscard"   # QEMU tests only (see the clean install)
+  tool mke2fs -F -q -t ext4 $NODISCARD -L GBOS_DATA -m 0 -O verity $TARGET_DATA >> $L/install.log 2>&1 || die "mkfs GBOS_DATA failed"
+  tool e2fsck -fn $TARGET_DATA >> $L/install.log 2>&1 || die "fsck GBOS_DATA failed"
+fi
 
 # Copy, then check every file against the source after dropping the page cache.
 mkdir -p /mnt/nefi /mnt/nsys
-mount -t vfat ${P}1 /mnt/nefi || die "mount GBOS_EFI failed"
-mount -t vfat -o flush ${P}2 /mnt/nsys || die "mount GBOSSYS failed"
-mkdir -p /mnt/nefi/EFI/BOOT /mnt/nsys/gbos/logs
+mount -t vfat $TARGET_EFI /mnt/nefi || die "mount EFI failed"
+mount -t vfat -o flush $TARGET_SYS /mnt/nsys || die "mount GBOSSYS failed"
+mkdir -p /mnt/nsys/gbos/logs
+[ "$INSTALL_MODE" = dualboot ] || mkdir -p /mnt/nefi/EFI/BOOT
+
+# If physical GBOS_META is absent (dualboot), create loopback metadata.img inside GBOSSYS
+if [ -z "$(findfs LABEL=GBOS_META 2>/dev/null)" ] && [ ! -f /mnt/nsys/gbos/metadata.img ]; then
+  say "Creating loopback metadata.img (64 MB ext4) inside GBOSSYS..."
+  dd if=/dev/zero of=/mnt/nsys/gbos/metadata.img bs=1M count=64 2>/dev/null
+  tool mke2fs -F -q -t ext4 -L GBOS_META /mnt/nsys/gbos/metadata.img >> $L/install.log 2>&1
+fi
+
 say "Copying the kernel ..."
-cp $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || die "copy BOOTX64.EFI failed"
+if [ "$INSTALL_MODE" = dualboot ]; then
+  mkdir -p /mnt/nefi/EFI/gbos86
+  cp $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || die "copy BOOTX64.EFI failed"
+fi
+# The fallback path EFI/BOOT/BOOTX64.EFI belongs to the machine's other OS on a shared EFI partition: only a clean install owns it.
+if [ "$INSTALL_MODE" = clean ]; then
+  cp $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || die "copy BOOTX64.EFI failed"
+fi
 say "Copying the system (super.img is $(( $(stat -c %s $G/super.img) / 1048576 )) MiB, this takes a few minutes) ..."
 for f in $FILES; do cp $G/$f /mnt/nsys/gbos/$f || die "copy $f failed"; done
 for d in $DIRS; do cp -r $G/$d /mnt/nsys/gbos/ || die "copy $d/ failed"; done
@@ -278,7 +417,7 @@ write_installed_cfg
 sync; echo 3 > /proc/sys/vm/drop_caches
 
 say "Verifying ..."
-check $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI
+if [ "$INSTALL_MODE" = dualboot ]; then check $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI; else check $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI; fi
 for f in $FILES; do check $G/$f /mnt/nsys/gbos/$f; done
 for d in $DIRS; do (cd $G && find $d -type f) | while read f; do check $G/$f /mnt/nsys/gbos/$f; done || exit 1; done || die "verify failed"
 for i in $STAMPED; do stamp_save $i || true; done
@@ -286,10 +425,17 @@ umount /mnt/nefi /mnt/nsys /mnt/stickefi; sync
 
 say ""
 say "=============================================================="
-say " gbOS86 is installed on $TD."
-say " Remove the USB stick, then turn the laptop back on. If it doesn't"
-say " boot gbos, press F12 at the logo and pick the internal disk's UEFI entry"
-say " (or add \\EFI\\BOOT\\BOOTX64.EFI as a boot option in BIOS setup)."
+if [ "$INSTALL_MODE" = dualboot ]; then
+  say " gbOS86 is installed on $TD alongside existing OS."
+  say " Remove the USB stick, then turn the laptop back on."
+  say " Press your boot key (F12 / F9 / Esc) at the logo and pick"
+  say " 'gbOS86' or the internal drive UEFI boot entry."
+else
+  say " gbOS86 is installed on $TD."
+  say " Remove the USB stick, then turn the laptop back on. If it doesn't"
+  say " boot gbos, press F12 at the logo and pick the internal disk's UEFI entry"
+  say " (or add \\EFI\\BOOT\\BOOTX64.EFI as a boot option in BIOS setup)."
+fi
 say "=============================================================="
 log "install: complete"; sync
 if [ -n "$CONFIRM" ]; then poweroff -f; fi

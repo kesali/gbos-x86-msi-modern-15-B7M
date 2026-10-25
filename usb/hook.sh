@@ -614,10 +614,10 @@ fi
 # SetupWizard bypass: generic PCs fail Google's official OTA check and get stuck on the update screen (Issue #24).
 # SKIP_SETUP=1 in gbos.cfg (default) masks SetupWizard APK directories and update_engine services.
 if [ "${SKIP_SETUP:-1}" != 0 ]; then
-  mkdir -p /new/mnt/empty_suw
+  mkdir -p /tmp/empty_suw
   for suw in /new/product/priv-app/*[Ss]etup[Ww]izard* /new/system_ext/priv-app/*[Ss]etup[Ww]izard* /new/system/priv-app/*[Ss]etup[Ww]izard*; do
     if [ -d "$suw" ]; then
-      mount --bind /new/mnt/empty_suw "$suw" 2>/dev/null && log "hook: masked $(basename "$suw") with empty dir"
+      mount --bind /tmp/empty_suw "$suw" 2>/dev/null && log "hook: masked $(basename "$suw") with empty dir"
     fi
   done
   for rc in /new/system/etc/init/update_engine.rc /new/system/etc/init/update_engine_sideload.rc; do
