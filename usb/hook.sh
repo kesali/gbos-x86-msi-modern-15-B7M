@@ -576,6 +576,38 @@ AC=gbos-hda-pch
 if [ -f $G/audio/gbos-hda-pch/audio_config.xml ]; then
   CARD=$(gbos_audio_card)
   CID=$(echo "$CARD" | sed -n 's/^ *[0-9]* \[\([^] ]*\) *\].*/\1/p'); CNAME=$(echo "$CARD" | sed -n 's/.* - //p')
+  # dras strips non-alphanumerics from the configured card id and cannot find ALSA's second "Generic" card, Generic_1.
+  # Free the first id by leaving the GPU HDMI audio unbound, then re-probe the internal card.
+  case "$CID" in *[!A-Za-z0-9]*)
+    CNO=$(echo "$CARD" | sed -n 's/^ *\([0-9][0-9]*\) \[.*/\1/p')
+    BCNO=
+    for _cn in $(sed -n 's/^ *\([0-9][0-9]*\) \[.*/\1/p' /proc/asound/cards); do
+      [ "$_cn" = "$CNO" ] && continue
+      if grep -h '^Codec:' /proc/asound/card$_cn/codec#* 2>/dev/null | grep -qiE 'HDMI|DisplayPort'; then BCNO=$_cn; break; fi
+    done
+    D=/sys/bus/pci/drivers/snd_hda_intel
+    MDEV=$(readlink -f /sys/class/sound/card$CNO/device 2>/dev/null); MDEV=${MDEV##*/}
+    BDEV=$(readlink -f /sys/class/sound/card$BCNO/device 2>/dev/null); BDEV=${BDEV##*/}
+    if [ -n "$BCNO" ] && [ -d $D/$MDEV ] && [ -d $D/$BDEV ] \
+       && echo "$BDEV" > $D/unbind && echo "$MDEV" > $D/unbind && echo "$MDEV" > $D/bind; then
+      CARD=
+      _try=0
+      while [ -z "$CARD" ] && [ "$_try" -lt 20 ]; do
+        CARD=$(gbos_audio_card)
+        [ -n "$CARD" ] || sleep 0.1
+        _try=$((_try + 1))
+      done
+      CID=$(echo "$CARD" | sed -n 's/^ *[0-9]* \[\([^] ]*\) *\].*/\1/p'); CNAME=$(echo "$CARD" | sed -n 's/.* - //p')
+      if [ -n "$CID" ]; then
+        log "hook: HDMI audio left unbound; internal audio card is '$CARD'"
+      else
+        log "hook: internal audio card did not register after HDMI audio unbind and re-probe"
+      fi
+    else
+      [ -n "$MDEV" ] && [ -d "$D/$MDEV" ] || { [ -n "$MDEV" ] && echo "$MDEV" > $D/bind; }
+      log "hook: could not re-probe internal audio card; HDMI audio may be unavailable"
+    fi;;
+  esac
   mkdir -p /tmp/gbos-audio
   if [ -n "$CID" ] && [ "$CID" != PCH ]; then
     AC=gbos-gen
@@ -597,7 +629,7 @@ if [ -f $G/audio/gbos-hda-pch/audio_config.xml ]; then
         && log "hook: audio mixer_paths for the Surface Laptop 7 (RT1320/RT721) installed"
     fi
     # ASRC lives in /tmp of the initramfs, which switch_root deletes: a bind mount of it is empty in Android (dras: "Failed to read
-    # /vendor/etc/audio/gbos-gen/audio_config.xml"), so the files are copied into the tmpfs over /vendor/etc/audio below.
+    # /vendor/etc/audio/gbos-gen/audio_config.xml"), so the files (audio_default.xml too: dras got "(deleted)" EACCES on it) are copied into the tmpfs over /vendor/etc/audio below.
     ASRC=/tmp/gbos-audio/$AC; ADEF=/tmp/gbos-audio/audio_default.xml
   else
     ASRC=$G/audio/gbos-hda-pch; ADEF=$G/audio/audio_default.xml
@@ -605,7 +637,8 @@ if [ -f $G/audio/gbos-hda-pch/audio_config.xml ]; then
   mkdir -p /tmp/vaudio && mount --bind $A /tmp/vaudio && mount -t tmpfs -o mode=0755 tmpfs $A \
     && for f in /tmp/vaudio/*; do n=${f##*/}; { [ -d $f ] && mkdir -p $A/$n || touch $A/$n; } && mount --bind $f $A/$n; done \
     && mkdir -p $A/$AC && cp -r $ASRC/. $A/$AC/ \
-    && mount --bind $ADEF /new/vendor/etc/data/hal_configs/audio_default.xml \
+    && cp $ADEF $A/.gbos_audio_default.xml \
+    && mount --bind $A/.gbos_audio_default.xml /new/vendor/etc/data/hal_configs/audio_default.xml \
     && log "hook: audio config $AC (card id ${CID:-none}, name ${CNAME:-none}) active"
 fi
 # apgetty (UART shell) has no UART configured here and crash-loops
