@@ -307,6 +307,11 @@ H=$ROOT/usb/hook.sh
 chk "hook: PCH uses the shipped config"   "$H" 'ASRC=$G/audio/gbos-hda-pch; ADEF=$G/audio/audio_default.xml'
 chk "hook: generation only for non-PCH"   "$H" 'if [ -n "$CID" ] && [ "$CID" != PCH ]; then'
 chk "hook: calls the generator"           "$H" 'sh $G/audio/gen_config.sh'
+chk "hook: clears stale sound nodes after HDA re-probe" "$H" 'rm -f /dev/snd/*'
+chk "hook: rebuilds sound nodes from sysfs after HDA re-probe" "$H" 'for _snd in /sys/class/sound/*; do'
+chk "hook: creates sound nodes with sysfs device numbers" "$H" 'mknod -m 0660 "/dev/snd/$_snd_name" c "$_snd_major" "$_snd_minor"'
+nochk "hook: no temporary early audio diagnostic service" "$H" 'gbos_audiodiag_early'
+nochk "hook: no temporary early audio diagnostic trigger" "$H" 'start gbos_audiodiag_early'
 chk "hook: Surface mixer_paths only on the Surface (DMI), not on every sofsoundwire card" "$H" "grep -qi 'Surface Laptop.*7th Edition' /sys/class/dmi/id/product_name"
 chk "hook: generated config is copied into the tmpfs" "$H" 'cp -r $ASRC/. $A/$AC/'
 nochk "hook: no bind mount of the initramfs /tmp config" "$H" 'mount --bind $ASRC $A/$AC'

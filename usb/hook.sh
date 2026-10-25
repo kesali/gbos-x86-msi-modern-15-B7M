@@ -599,6 +599,20 @@ if [ -f $G/audio/gbos-hda-pch/audio_config.xml ]; then
       done
       CID=$(echo "$CARD" | sed -n 's/^ *[0-9]* \[\([^] ]*\) *\].*/\1/p'); CNAME=$(echo "$CARD" | sed -n 's/.* - //p')
       if [ -n "$CID" ]; then
+        # Stage0 has no hotplug mdev daemon, so rebuild /dev/snd from the post-reprobe sysfs devices.
+        mkdir -p /dev/snd
+        rm -f /dev/snd/*
+        _snd_ok=1
+        for _snd in /sys/class/sound/*; do
+          [ -r "$_snd/dev" ] || continue
+          _snd_name=${_snd##*/}
+          case "$_snd_name" in card[0-9]*) continue;; esac
+          _snd_dev=$(cat "$_snd/dev")
+          _snd_major=${_snd_dev%:*}; _snd_minor=${_snd_dev#*:}
+          case "$_snd_major:$_snd_minor" in *[!0-9:]*|:*) _snd_ok=0; continue;; esac
+          mknod -m 0660 "/dev/snd/$_snd_name" c "$_snd_major" "$_snd_minor" || _snd_ok=0
+        done
+        [ "$_snd_ok" = 1 ] || log "hook: failed to recreate some /dev/snd nodes from sysfs"
         log "hook: HDMI audio left unbound; internal audio card is '$CARD'"
       else
         log "hook: internal audio card did not register after HDMI audio unbind and re-probe"
