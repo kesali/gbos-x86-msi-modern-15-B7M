@@ -23,7 +23,8 @@ if [ -n "$1" ]; then
   U="https://dl.google.com/device/recovery/lapis-user/$1/recovery.zip"
   case $(head_of "$U" | head -1) in *200*) echo "build $1 EXISTS at $U"; [ "$1" != "$BUILD_ID" ] && NEWER=$1;; *) echo "build $1: not served";; esac
 fi
-IDS=$(curl -s -A "$UA" --max-time 25 "https://aluminium-os.com/googlebookos/googlebook-lapis/" 2>/dev/null | grep -oE 'lapis-user/[0-9]+' | sed 's#.*/##' | sort -u)
+# aluminium-os.com answers 403 to curl at times, so cros.tech's page (its "Latest recovery image" row carries lapis-user/<id>) is read as well
+IDS=$( { curl -s -A "$UA" --max-time 25 "https://aluminium-os.com/googlebookos/googlebook-lapis/" 2>/dev/null; curl -s -A "$UA" --max-time 25 "https://cros.tech/googlebook/lapis/" 2>/dev/null; } | grep -oE 'lapis-user/[0-9]+' | sed 's#.*/##' | sort -u)
 for i in $IDS; do [ "$i" -gt "$BUILD_ID" ] 2>/dev/null && NEWER="$NEWER $i"; done
 if [ -n "$NEWER" ]; then
   echo; echo "NEWER build(s): $NEWER"
