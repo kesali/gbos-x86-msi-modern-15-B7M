@@ -127,8 +127,9 @@ UEFI firmware
 | Everything too big | `ro.sf.lcd_density=260` for Google's panel | `RESOLUTION` in `gbos.cfg` (default 2400x1350, stock density); `DENSITY` optional |
 
 Laptop-specific drivers that Google's vendor modules can't provide (they're built for Google's kernel):
-battery/AC, Intel LPSS I2C (touchpad), legacy HDA audio and `btusb` are built into our kernel
-(`kernel/configure_whl.py`). Wi-Fi and Bluetooth firmware are in `usb/firmware/`.
+battery/AC, Intel LPSS I2C (touchpad), AMD pinctrl/GPIO (I2C touchpad interrupts), legacy HDA audio and
+`btusb` are enabled in our kernel (`kernel/configure_whl.py`). Wi-Fi and Bluetooth firmware are in
+`usb/firmware/`.
 
 **Root for apps (KernelSU).** [KernelSU](https://github.com/tiann/KernelSU) is built into our kernel
 (`kernel/kernelsu/apply.sh` puts the sources in `drivers/kernelsu`, `CONFIG_KSU=y`), so apps can be
@@ -179,7 +180,7 @@ Pattern: 2017 to 2022 business and mainstream laptops work with little setup (Wi
 or Wi-Fi 7 cards without a working driver and firmware pair. Missing firmware is listed in `hwdetect.txt` under "missing firmware".
 To try a driver option on your own laptop, put e.g. `MODOPTS="xe.enable_panel_replay=0"` in `gbos/gbos.cfg` (modules only; see the file's comments).
 
-## Other laptops (generic Intel gen 6+ support)
+## Other laptops (generic Intel gen 6+ and AMD touchpad GPIO support)
 
 The kernel (#31) builds drivers for most Intel-era laptops as **modules**, and boot detects what is present:
 
@@ -248,7 +249,7 @@ NDK r30 in Docker (about 10 minutes after the downloads) and writes `build/radv/
 `libcutils/liblog/libnativewindow/libsync/libz` + bionic). Copy it to `usb/patched/`; with `GPU_VULKAN=auto` (default) `hook.sh` then binds it over
 `vulkan.intel.so` instead of SwiftShader when `amdgpu` is bound (`GPU_VULKAN=swiftshader` goes back). It reaches the desktop on an
 MSI Modern 15 B7M (Ryzen 5 7530U, Barcelo, RADV RENOIR), and video previews in Play Store and Photos play. Known problems on that machine: Photos cannot open
-HEVC clips (the software HEVC decoder fails), the pointer renders as a red square, and the built-in touchpad is absent; see `HANDOFF.md`.
+HEVC clips (the software HEVC decoder fails), the pointer renders as a red square, and the built-in touchpad is absent; AMD pinctrl/GPIO is now enabled in the generic kernel profile, but that touchpad change still needs hardware verification. See `HANDOFF.md`.
 `tools/test_gpu_select.sh` tests only the driver-selection logic.
 
 `GPU_SOFTWARE` in `gbos.cfg`: `auto` (default; never changes anything while an Intel GPU is present), `1` (force, for testing on Intel), `0` (never).
