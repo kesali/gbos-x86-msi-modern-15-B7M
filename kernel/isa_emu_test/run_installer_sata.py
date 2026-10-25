@@ -53,7 +53,7 @@ def build_tree(cfg):
         else: (G / f).write_bytes(b'test dummy ' + f.encode())
     (G / 'super.img').write_bytes(os.urandom(6 * MIB)); (G / 'super.layout').write_bytes(b'test dummy layout')
     shutil.copytree(usb / 'installer', G / 'installer', symlinks=False)
-    for d in ('firmware', 'patched', 'audio', 'kmod'):
+    for d in ('firmware', 'patched', 'audio', 'kmod', 'surface', 'ksu'):
         (G / d).mkdir(); (G / d / 'dummy').write_bytes(os.urandom(70000))
     # modules: only the tree metadata and the four mmc host modules, so the installer's fallback (bind the stick's tree, modprobe) is exercised
     kver = next((usb / 'modules/lib/modules').iterdir()).name

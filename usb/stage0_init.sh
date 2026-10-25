@@ -187,6 +187,12 @@ mdev -s
 DATA=; META=
 if [ $FROM = nvme ]; then
   DATA=$(findfs LABEL=GBOS_DATA 2>/dev/null); META=$(findfs LABEL=GBOS_META 2>/dev/null)
+  # A dual-boot install (installer mode 1) has no GBOS_META partition: /metadata is the 64 MB ext4 image gbos/metadata.img inside GBOSSYS.
+  # loop12 is free in both layouts (0-5 and 7 are super.img, 8-11 the separate images, 6 the fake boot disk).
+  if [ -n "$DATA" ] && [ -z "$META" ] && [ -f $G/metadata.img ]; then
+    if losetup /dev/loop12 $G/metadata.img 2>/dev/null; then META=/dev/loop12; log "metadata: image $G/metadata.img on loop12"
+    else log "metadata: losetup of $G/metadata.img FAILED"; fi
+  fi
 fi
 e2fsck_p() { [ -x $G/installer/bin/e2fsck ] && $G/installer/lib/ld-musl-x86_64.so.1 --library-path $G/installer/lib $G/installer/bin/e2fsck -p "$1" >> $L/fsck.txt 2>&1; log "e2fsck -p $1 rc=$?"; }
 if [ -n "$DATA" ] && [ -n "$META" ]; then
