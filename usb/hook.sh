@@ -140,15 +140,16 @@ gbos_gpu_decide() {
       drv=${e#*,}
       case "$drv" in i915|xe) intel=$drv;; *) gbos_gpu_real "$drv" && real="$real ${e%%,*}:$drv";; esac
     done
-    # Intel (bound, or at least present on the PCI bus): leave everything as it is, whatever else is installed.
+    # Intel driver bound: hardware acceleration active, leave software rendering off
     [ -n "$intel" ] && { log "hook: software rendering: off (auto; Intel GPU driver $intel bound)"; return 0; }
-    gbos_gpu_intel_pci && { log "hook: software rendering: off (auto; Intel display controller present)"; return 0; }
     [ -n "$real" ] && break
     [ $w -ge ${1:-0} ] && break
     sleep 1; w=$((w+1))
   done
   if [ -n "$real" ]; then
     GPU_SW=1; log "hook: software rendering: on (auto; no Intel GPU, DRM:$real, after ${w}s)"
+  elif [ -z "$intel" ] && gbos_gpu_intel_pci; then
+    GPU_SW=1; log "hook: software rendering: on (auto; Intel GPU present but no DRM driver bound after ${w}s; falling back to CPU Vulkan)"
   else
     log "hook: software rendering: off (auto; no DRM GPU driver bound after ${w}s; cards: $(gbos_gpu_cards | tr '\n' ';'))"
   fi

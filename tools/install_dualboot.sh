@@ -203,6 +203,19 @@ done
 for d in firmware patched audio installer kmod modules surface ksu; do
   [ -d "$U/$d" ] && { mkdir -p "$MNT_SYS/gbos/$d"; cp -R "$U/$d/." "$MNT_SYS/gbos/$d/"; }
 done
+# Ensure both '+' and non-'+' versions exist on the FAT32 filesystem
+for _m in "$MNT_SYS/gbos/modules/lib/modules/"*-gbos-whl+; do
+  if [ -d "$_m" ]; then
+    _base="${_m%+}"
+    [ ! -d "$_base" ] && cp -a "$_m" "$_base" 2>/dev/null || true
+  fi
+done
+for _m in "$MNT_SYS/gbos/modules/lib/modules/"*-gbos-whl; do
+  if [ -d "$_m" ]; then
+    _plus="${_m}+"
+    [ ! -d "$_plus" ] && cp -a "$_m" "$_plus" 2>/dev/null || true
+  fi
+done
 
 # The system image: build it from lapis/parts (the same call as tools/make_gbos86_image.sh), unless a built one is around
 SUPER=""

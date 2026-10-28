@@ -71,6 +71,19 @@ for f in hook.sh aidiag.sh early_patch.sh hwdetect.sh install.sh apex_patch.sh g
   cp "$U/$f" "$G/$f"
 done
 for d in firmware patched audio installer kmod modules surface ksu; do cp -R "$U/$d" "$G/$d"; done
+# Ensure both '+' and non-'+' versions exist on the FAT32 image filesystem
+for _m in "$G/modules/lib/modules/"*-gbos-whl+; do
+  if [ -d "$_m" ]; then
+    _base="${_m%+}"
+    [ ! -d "$_base" ] && cp -a "$_m" "$_base" 2>/dev/null || true
+  fi
+done
+for _m in "$G/modules/lib/modules/"*-gbos-whl; do
+  if [ -d "$_m" ]; then
+    _plus="${_m}+"
+    [ ! -d "$_plus" ] && cp -a "$_m" "$_plus" 2>/dev/null || true
+  fi
+done
 mkdir -p "$G/logs"
 
 # Configure boot mode

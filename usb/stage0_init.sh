@@ -48,14 +48,17 @@ DEV=$STICK; FROM=stick; SELMODE=
 boot_menu() {
   def=1; [ -n "$SYS" ] && def=3
   chvt 1 2>/dev/null; clear > /dev/tty1 2>/dev/null
+  sleep 1
+  # Discard any residual keystrokes (e.g. Enter pressed in GRUB)
+  while read -t 1 -r _junk < /dev/tty1 2>/dev/null; do :; done
   {
     echo; echo "   gbOS86"; echo "   ------"; echo
     echo "   1) Run gbOS86 live from this USB (nothing is saved)"
     echo "   2) Install or update gbOS86 on this laptop's internal SSD"
     [ -n "$SYS" ] && echo "   3) Boot the installed gbOS86"
-    echo; printf "   Choose 1-%s [default %s in 10 s]: " "$([ -n "$SYS" ] && echo 3 || echo 2)" $def
+    echo; printf "   Choose 1-%s [default %s in 15 s]: " "$([ -n "$SYS" ] && echo 3 || echo 2)" $def
   } > /dev/tty1
-  c=; read -t 10 -n 1 c < /dev/tty1; echo > /dev/tty1
+  c=; read -t 15 -r c < /dev/tty1; echo > /dev/tty1
   case "$c" in 1|2) ;; 3) [ -n "$SYS" ] || c=$def;; *) c=$def;; esac
   log "boot menu: choice $c (default $def)"
   CHOICE=$c

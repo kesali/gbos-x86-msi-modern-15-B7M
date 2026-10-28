@@ -13,7 +13,13 @@ I=$G/installer
 tool() { $I/lib/ld-musl-x86_64.so.1 --library-path $I/lib $I/bin/"$@"; }
 TTY=/dev/tty1
 say() { echo "$*" > $TTY; echo "$*" >> $L/install.log; log "install: $*"; }
-halt_here() { say ""; say "$1"; say "Power off with the power button."; sync; while true; do sleep 3600; done; }
+halt_here() {
+  say ""
+  say "$1"
+  ask "Press Enter to reboot (or turn off power now): "
+  sync
+  reboot -f
+}
 # save_logs MOUNTED_GBOS_DIR [BOOTS]: copy the installed system's last BOOTS (default 3) boot-N log dirs to
 # this boot's log dir on the stick (gbos/logs/boot-N/nvme-logs). A file FAT can't read in full (cluster chain
 # cut short by a power-off) is copied with dd conv=noerror,sync instead of failing; the tail is then NULs.
@@ -88,6 +94,8 @@ internal_efi() {
   [ -n "$_e" ] || _e=$(findfs LABEL=GBOS_EFI 2>/dev/null)
   [ -n "$_e" ] || _e=$(findfs LABEL=EFI 2>/dev/null)
   [ -n "$_e" ] || _e=$(findfs LABEL=SYSTEM 2>/dev/null)
+  [ -n "$_e" ] || _e=$(findfs LABEL=ESP 2>/dev/null)
+  [ -n "$_e" ] || _e=$(findfs LABEL=SYSTEM_DRV 2>/dev/null)
   echo "$_e"
 }
 NSYS=$(findfs LABEL=GBOSSYS 2>/dev/null)
@@ -168,7 +176,10 @@ fi
 # The SATA/AHCI driver and the SCSI disk driver are built into the kernel.
 if ! ls /sys/block | grep -q '^mmcblk'; then
   KVER=$(uname -r)
-  [ -f $G/modules/lib/modules/$KVER/modules.dep ] && ! mountpoint -q /lib/modules 2>/dev/null && mount --bind $G/modules/lib/modules /lib/modules 2>/dev/null
+  KMOD="$G/modules/lib/modules/$KVER"
+  [ -d "$KMOD" ] || KMOD="$G/modules/lib/modules/${KVER}+"
+  [ -d "$KMOD" ] || KMOD="$G/modules/lib/modules/${KVER%+}"
+  [ -f "$KMOD/modules.dep" ] && ! mountpoint -q /lib/modules 2>/dev/null && mount --bind "$G/modules/lib/modules" /lib/modules 2>/dev/null
   modprobe -q sdhci-pci 2>/dev/null && log "install: sdhci-pci loaded"
 fi
 # A disk is SATA when libata owns it: its sysfs path runs through an ataN port. A USB stick, a USB-SATA bridge, a card reader or a
@@ -336,8 +347,13 @@ if [ -n "$CURRENT_PARTS" ]; then
     1|dualboot|dual-boot) INSTALL_MODE=dualboot;;
     2|clean|erase) INSTALL_MODE=clean;;
     3|live)
-      say "Starting gbOS86 Live Desktop..."
-      exit 0
+      say ""
+      say "Configuring next boot for Live Desktop..."
+      sed -i 's/^MODE=.*/MODE=live/' $G/gbos.cfg 2>/dev/null || true
+      sync
+      say "Rebooting into gbOS86 Live Desktop..."
+      sleep 2
+      reboot -f
       ;;
     *) halt_here "Cancelled. Nothing was written to $TD.";;
   esac
@@ -406,6 +422,8 @@ else
   TARGET_EFI=$(tool sfdisk -d $TD 2>/dev/null | awk 'toupper($0) ~ /TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B/ {print $1; exit}')
   [ -n "$TARGET_EFI" ] || TARGET_EFI=$(findfs LABEL=EFI 2>/dev/null)
   [ -n "$TARGET_EFI" ] || TARGET_EFI=$(findfs LABEL=SYSTEM 2>/dev/null)
+  [ -n "$TARGET_EFI" ] || TARGET_EFI=$(findfs LABEL=ESP 2>/dev/null)
+  [ -n "$TARGET_EFI" ] || TARGET_EFI=$(findfs LABEL=SYSTEM_DRV 2>/dev/null)
   [ -n "$TARGET_EFI" ] && [ -b "$TARGET_EFI" ] || die "no EFI system partition found on $TD"
   mkdir -p /mnt/nefi
   mount -t vfat -o ro $TARGET_EFI /mnt/nefi || die "cannot mount the EFI system partition $TARGET_EFI"

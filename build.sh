@@ -182,7 +182,13 @@ sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' '
 # The module tree has to be the one built with usb/out/BOOTX64.EFI: its directory is named after the kernel's release (usb/hwdetect.sh binds
 # gbos/modules/lib/modules/$(uname -r)) and a tree from another build is rejected by the kernel (module signature, symbol CRCs).
 KREL=$(grep -a -m1 -o '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-gbos-whl+\{0,1\} (' usb/out/BOOTX64.EFI 2>/dev/null | sed 's/ ($//')
-have_mods() { [ -n "$KREL" ] && [ -f "usb/modules/lib/modules/$KREL/kernel/drivers/iio/accel/hid-sensor-accel-3d.ko" ]; }
+have_mods() {
+  [ -n "$KREL" ] && {
+    [ -f "usb/modules/lib/modules/$KREL/kernel/drivers/iio/accel/hid-sensor-accel-3d.ko" ] || \
+    [ -f "usb/modules/lib/modules/${KREL}+/kernel/drivers/iio/accel/hid-sensor-accel-3d.ko" ] || \
+    [ -f "usb/modules/lib/modules/${KREL%+}/kernel/drivers/iio/accel/hid-sensor-accel-3d.ko" ]
+  }
+}
 have_swr() { [ -f usb/patched/vulkan.swiftshader.so ]; }
 have_ksu() { [ -f usb/ksu/manager.apk ] && [ -f usb/ksu/ksud ]; }
 have_parts() { for p in $PARTS; do [ -s lapis/parts/$p.img ] || return 1; done; }
@@ -222,6 +228,13 @@ if [ ! -x kernel/out/busybox ]; then say "2/4 busybox"; sh tools/fetch_busybox.s
 if ! have_mods; then
   say "3/4 kernel modules and firmware"
   fetch "$REL/$MODS" "build/dl/$MODS" "$MODS_SHA"; rm -rf usb/modules; tar -xJf "build/dl/$MODS" -C usb
+  if [ -n "$KREL" ]; then
+    if [ -d "usb/modules/lib/modules/${KREL}+" ] && [ ! -d "usb/modules/lib/modules/$KREL" ]; then
+      cp -a "usb/modules/lib/modules/${KREL}+" "usb/modules/lib/modules/$KREL" 2>/dev/null || ln -sf "${KREL}+" "usb/modules/lib/modules/$KREL" 2>/dev/null || true
+    elif [ -d "usb/modules/lib/modules/${KREL%+}" ] && [ ! -d "usb/modules/lib/modules/$KREL" ]; then
+      cp -a "usb/modules/lib/modules/${KREL%+}" "usb/modules/lib/modules/$KREL" 2>/dev/null || ln -sf "${KREL%+}" "usb/modules/lib/modules/$KREL" 2>/dev/null || true
+    fi
+  fi
   have_mods || die "the module tree in $MODS is not for this kernel (${KREL:-unknown}): usb/modules/lib/modules/ holds $(ls usb/modules/lib/modules 2>/dev/null | tr '\n' ' '). Build it with kernel/build_kernel.sh"
 else say "3/4 kernel modules: present"; fi
 if [ ! -f usb/firmware/rtl_nic/rtl8168h-2.fw ]; then

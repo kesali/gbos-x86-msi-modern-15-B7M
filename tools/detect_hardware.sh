@@ -137,12 +137,12 @@ detect_host_hardware() {
         DETECTED_LOAD_I915=0
         DETECTED_XE_PARAMS="enable_psr=0 enable_fbc=0 enable_panel_replay=0"
         DETECTED_EXTRA_SLEEP=2
-        DETECTED_GPU_SW=0
+        DETECTED_GPU_SW=auto
         DETECTED_GPU_VK=auto
       else
         DETECTED_GPU_NAME="Intel HD/UHD Graphics"
         DETECTED_LOAD_I915=1
-        DETECTED_GPU_SW=0
+        DETECTED_GPU_SW=auto
         DETECTED_GPU_VK=auto
       fi
       ;;
