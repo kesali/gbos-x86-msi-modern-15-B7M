@@ -25,12 +25,14 @@ git clone https://github.com/linuxkid473/gbos-x86 && cd gbos-x86
 ```
 
 When you run `./build.sh`, it prompts you to select the image type:
-1. **Standard image (`dist/gbOS86-YYYYMMDD.img`)**: Live USB installer. Boots into the 10-second gbOS86 boot menu (`MODE=ask`), allowing you to run live in RAM or install/update on the internal SSD.
-2. **Loopback persistent image (`dist/gbOS86-looper-YYYYMMDD.img`)**: Portable standalone OS. Boots directly into Android (`MODE=boot`) with persistent ext4 `/metadata` and `/data`. All installed apps, accounts, and settings persist directly on the USB stick.
+1. **Host-tailored auto image**: Auto-probes the host hardware (CPU, AVX2, GPU, display resolution and optimal UI density) and tailors `gbos.cfg` automatically.
+2. **Standard image (`dist/gbOS86-YYYYMMDD.img`)**: Live USB installer. Boots into the gbOS86 boot menu (`MODE=ask`), allowing you to run live in RAM or install/update on the internal SSD.
+3. **Loopback persistent image (`dist/gbOS86-looper-YYYYMMDD.img`)**: Portable standalone OS. Boots directly into Android (`MODE=boot`) with persistent ext4 `/metadata` and `/data`. All installed apps, accounts, and settings persist directly on the USB stick.
 
 You can also pass CLI arguments directly:
 ```sh
-./build.sh --standard
+./build.sh --auto                      # Auto-detect host hardware and build a tailored image
+./build.sh --standard                  # Standard installer image
 ./build.sh --looper --data-size 64     # 64 GB sparse userdata (only ~6.5 GB on host disk)
 ```
 
@@ -194,7 +196,7 @@ The kernel (#31) builds drivers for most Intel-era laptops as **modules**, and b
 
 | Area | Covered |
 |---|---|
-| CPU | Anything the ISA-emulation kernel handles: 6th gen (Skylake) and newer **with AVX** (many Celeron/Pentium/Atom parts have none: init dies on its first instruction, and boot now stops with a message); the Googlebook OS needs instructions older CPUs lack, so it is emulated (slow on pre-2021 CPUs) |
+| CPU | Anything the ISA-emulation kernel handles: 4th gen (Haswell) and newer **with AVX2** (CPUs lacking AVX2, such as Celeron/Pentium/Atom or Sandy/Ivy Bridge, halt at boot with a clear message, as AOSP's dynamic linker executes AVX2 instructions); the Googlebook OS needs instructions older CPUs lack, so it is emulated (slow on pre-2021 CPUs) |
 | Graphics / display / brightness | `i915` (Gen9 to Raptor Lake) + ACPI video/backlight; `xe` for newer parts (needs its own firmware, in firmware release v35; the colour/gamma fixes are i915-only). **AMD Radeon (`amdgpu`): experimental, software rendering only** (CPU-drawn, slow; see below; **untested on hardware**) |
 | Wi-Fi | Intel (`iwldvm`: 7260/7265, `iwlmvm`: 8265 to AX211/BE200), Realtek rtw88/rtw89, MediaTek mt7921/7922/7925, Qualcomm ath10k/ath11k, Broadcom brcmfmac |
 | Bluetooth | `btusb` with Intel/Realtek/MediaTek/Qualcomm/Broadcom, Intel PCIe BT |
@@ -318,19 +320,37 @@ Creates a full portable install directly inside the flash drive image, matching 
 > - **64 GB+ stick**: `--data-size 64` (default)
 
 ### Install to the internal disk (NVMe, eMMC or SATA)
-Set `MODE=install` in `gbos/gbos.cfg` and boot the stick. The target is the internal NVMe or **eMMC** disk (an eMMC is
-recognised by its MMC device type: SD cards, card readers and the stick are never targets; the eMMC's boot/RPMB areas are left
-alone). With more than one internal disk the installer refuses until `INSTALL_DISK=nvme0n1` (or `mmcblk0`) is set in `gbos.cfg`.
-A **SATA disk** (M.2 SATA or 2.5") is a target when the machine has no NVMe/eMMC: it is recognised by being owned by the SATA driver (libata), so a USB stick, a USB-SATA
-adapter or a card reader is never a target. A laptop with an NVMe *and* a SATA disk keeps installing to the NVMe; to use the SATA disk set `INSTALL_DISK=sda` in `gbos.cfg`.
-The BIOS must show the disk in **AHCI** mode (not Intel RST/RAID or VMD), otherwise Linux cannot see it. (On a Dell the setting is *SATA/NVMe Operation*: change `RAID On` to `AHCI/NVMe`. `CONFIG_VMD` is not in this kernel.) The serial to type is the drive's own serial.
+Boot the stick and select option 2 ("Install or update gbOS86 on this laptop's internal SSD"), or set `MODE=install` in `gbos/gbos.cfg`.
+
+The target is the internal NVMe or **eMMC** disk (an eMMC is recognised by its MMC device type: SD cards, card readers and the stick are never targets; the eMMC's boot/RPMB areas are left alone). With more than one internal disk the installer refuses until `INSTALL_DISK=nvme0n1` (or `mmcblk0`) is set in `gbos.cfg`.
+A **SATA disk** (M.2 SATA or 2.5") is a target when the machine has no NVMe/eMMC: it is recognised by being owned by the SATA driver (libata), so a USB stick, a USB-SATA adapter or a card reader is never a target. A laptop with an NVMe *and* a SATA disk keeps installing to the NVMe; to use the SATA disk set `INSTALL_DISK=sda` in `gbos.cfg`.
+The BIOS must show the disk in **AHCI** mode (not Intel RST/RAID or VMD), otherwise Linux cannot see it. (On a Dell the setting is *SATA/NVMe Operation*: change `RAID On` to `AHCI/NVMe`. `CONFIG_VMD` is not in this kernel.)
 Minimum disk size 24 GB. eMMC controllers on the PCI bus work (`sdhci-pci`); ACPI-only ones (some AMD and older Atom parts) are not supported.
-- **No gbos on the disk:** it shows the disk's model/serial/size and **erases the whole disk** only after
-  you type the serial number (eMMC: the MMC serial, or its CID when that is empty or zero; SATA: the drive's serial). Layout: `GBOS_EFI` 512M (ESP), `GBOSSYS` 8G FAT32 (the `gbos/` files),
-  `GBOS_META` 64M ext4, `GBOS_DATA` rest ext4. Every copied file is sha256-verified.
-- **gbos already installed:** it asks **1) Update** (keeps data, copies new files and kernel, and saves the
-  install's last 3 boots of logs to the stick), **2) Reinstall** (erase; still asks for the serial) or
-  **3) Only save its logs** (read-only on the NVMe, takes seconds).
+
+#### Installation Modes
+When installing onto a drive with existing operating systems (Windows or Linux), the installer offers an interactive choice:
+
+- **1) Dual-Boot (Recommended — alongside Windows or Linux):**
+  > [!IMPORTANT]
+  > **Unallocated Free Space Required:** Dual-boot requires unallocated (unpartitioned) space on the target disk (at least 20–24 GB recommended; 8 GB for the `GBOSSYS` system partition + remaining space for `GBOS_DATA` userdata).
+  >
+  > - **Windows:** Open *Disk Management* (`diskmgmt.msc`), right-click your `C:` partition, select **Shrink Volume**, and specify at least `24000` MB (24 GB) to leave as unallocated space.
+  > - **Linux:** Use GParted or `parted` to shrink an existing partition and leave unallocated space at the end of the disk.
+  >
+  > The installer preserves all existing OS partitions and the shared EFI system partition. It creates `GBOSSYS` (8 GB FAT32) and `GBOS_DATA` (ext4) within the unallocated space.
+  > - **Linux / GRUB:** Automatically adds `Googlebook OS (gbOS86)` to your GRUB menu (via `custom.cfg`) without menu duplicates.
+  > - **Windows Boot Manager:** The installer copies `Add-gbOS-to-Windows-BootMenu.bat` into the EFI partition (`\EFI\gbos86\`); simply right-click and run it as Administrator in Windows to add gbOS86 to the Windows boot menu.
+
+- **2) Full clean install (Erases entire disk):**
+  Lays out the entire disk cleanly: `GBOS_EFI` 512M (ESP), `GBOSSYS` 8G FAT32 (system), `GBOS_META` 64M ext4, and `GBOS_DATA` (remaining space for user apps/data). To prevent accidental data loss, it requires confirming by typing the drive's serial number.
+
+- **3) Start Live Desktop:**
+  Configures a one-time live session in RAM without writing to the disk.
+
+- **If gbOS is already installed:**
+  The installer offers **1) Update** (keeps your apps and data, updates system files and kernel), **2) Reinstall** (clean wipe), or **3) Only save logs**.
+
+During installation, live progress bars indicate system image and driver/firmware copying, followed by fast sha256 verification.
 
 ### Debugging workflow
 The system writes logs to its own `GBOSSYS` (or `GBOS`) partition. To read them, boot the stick, choose
@@ -403,7 +423,7 @@ mostly automated; [`porting.md`](porting.md) is the full procedure:
    bound. Data carries over; going back to an older build requires a data wipe.
 
 ## Safety
-- `install.sh` erases the **entire** internal disk (NVMe, eMMC or SATA) on a fresh install. The serial-number prompt is the only guard.
+- Full clean install erases the **entire** internal disk (NVMe, eMMC or SATA); typing the serial number is required. Dual-boot mode preserves existing OS partitions and only writes into unallocated free space.
 - SELinux runs **permissive**, and the security services are software stand-ins. Don't treat this as a
   secure device.
 - The ISA emulator runs in the kernel's `#UD` handler; a bug there is a kernel bug.
