@@ -1,6 +1,12 @@
 # gbos pre-Android hook: sourced by stage0 just before switch_root (Android root at /new,
 # helpers log/fail/shell and $G=/gbos/gbos available). Edit freely, no kernel rebuild needed.
 
+# Reset one-shot MODE=live back to MODE=ask so subsequent boots prompt the user
+if [ -f "$G/gbos.cfg" ] && grep -q '^MODE=live' "$G/gbos.cfg" 2>/dev/null; then
+  sed -i 's/^MODE=live/MODE=ask/' "$G/gbos.cfg" 2>/dev/null || true
+  sync 2>/dev/null || true
+fi
+
 # Library patches. patched/MANIFEST (written by tools/port_build.py) has one line per patch: kind, the path in the Android root
 # (/new/...), the sha256 of the exact original the patch was made from, and the patched file (relative to gbos/). A patch is
 # bound only over a file with that hash, so a new Google build never gets a stale patch: the line says "NOT patched" and shows

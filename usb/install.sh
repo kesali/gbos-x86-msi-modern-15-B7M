@@ -353,7 +353,7 @@ if [ -n "$CURRENT_PARTS" ]; then
     2|clean|erase) INSTALL_MODE=clean;;
     3|live)
       say ""
-      say "Configuring next boot for Live Desktop..."
+      say "Configuring one-time Live Desktop boot..."
       sed -i 's/^MODE=.*/MODE=live/' $G/gbos.cfg 2>/dev/null || true
       sync
       say "Rebooting into gbOS86 Live Desktop..."

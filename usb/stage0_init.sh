@@ -103,6 +103,8 @@ SHELL_AT=none; LOAD_I915=1; LOAD_WIFI=0; EXTRA_SLEEP=0; MODE=boot
 [ -f $G/gbos.cfg ] && . $G/gbos.cfg && log "loaded gbos.cfg: MODE=$MODE SHELL_AT=$SHELL_AT LOAD_I915=$LOAD_I915 LOAD_WIFI=$LOAD_WIFI"
 # The boot menu's choice wins over gbos.cfg's MODE (ask/live are menu-level settings).
 [ -n "$SELMODE" ] && MODE=$SELMODE
+# Reset temporary one-shot MODE=live back to MODE=ask on USB stick so future boots prompt the user
+[ "$FROM" = stick ] && [ -f $G/gbos.cfg ] && grep -q '^MODE=live' $G/gbos.cfg 2>/dev/null && sed -i 's/^MODE=live/MODE=ask/' $G/gbos.cfg 2>/dev/null || true
 case "$MODE" in install) ;; *) MODE=boot;; esac
 [ $FROM = nvme ] && MODE=boot
 
