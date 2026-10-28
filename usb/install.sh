@@ -494,6 +494,31 @@ if [ -z "$(findfs LABEL=GBOS_META 2>/dev/null)" ] && [ ! -f /mnt/nsys/gbos/metad
   tool mke2fs -F -q -t ext4 -L GBOS_META /mnt/nsys/gbos/metadata.img >> $L/install.log 2>&1
 fi
 
+copy_large_file() {
+  _src="$1"; _dst="$2"; _label="$3"
+  _tot=$(stat -c %s "$_src" 2>/dev/null || echo 0)
+  _tot_mb=$(( _tot / 1048576 ))
+  [ $_tot_mb -eq 0 ] && _tot_mb=1
+  dd if="$_src" of="$_dst" bs=4M conv=fsync 2>/dev/null &
+  _pid=$!
+  while kill -0 $_pid 2>/dev/null; do
+    _cur=$(stat -c %s "$_dst" 2>/dev/null || echo 0)
+    _pct=$(( _cur * 100 / _tot ))
+    _cur_mb=$(( _cur / 1048576 ))
+    _bars=$(( _pct / 4 ))
+    _spaces=$(( 25 - _bars ))
+    _pbar=""
+    _i=0; while [ $_i -lt $_bars ]; do _pbar="${_pbar}="; _i=$((_i+1)); done
+    [ $_bars -lt 25 ] && _pbar="${_pbar}>" && _spaces=$((_spaces - 1))
+    _i=0; while [ $_i -lt $_spaces ]; do _pbar="${_pbar} "; _i=$((_i+1)); done
+    printf "\r  %s: [%s] %3d%% (%d/%d MB)" "$_label" "$_pbar" "$_pct" "$_cur_mb" "$_tot_mb" > $TTY
+    sleep 1
+  done
+  wait $_pid || die "copy $_label failed"
+  printf "\r  %s: [=========================] 100%% (%d/%d MB) - OK\n" "$_label" "$_tot_mb" "$_tot_mb" > $TTY
+  echo "$_label: copied successfully" >> $L/install.log
+}
+
 say "Copying the kernel ..."
 if [ "$INSTALL_MODE" = dualboot ]; then
   mkdir -p /mnt/nefi/EFI/gbos86
@@ -503,36 +528,129 @@ fi
 if [ "$INSTALL_MODE" = clean ]; then
   cp $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI || die "copy BOOTX64.EFI failed"
 fi
-say "Copying the system (super.img is $(( $(stat -c %s $G/super.img) / 1048576 )) MiB, this takes a few minutes) ..."
-for f in $FILES; do cp $G/$f /mnt/nsys/gbos/$f || die "copy $f failed"; done
-for d in $DIRS; do cp -r $G/$d /mnt/nsys/gbos/ || die "copy $d/ failed"; done
+
+say "Copying system image (super.img) ..."
+copy_large_file "$G/super.img" "/mnt/nsys/gbos/super.img" "System Image"
+
+say "Copying system configuration and scripts ..."
+for f in $FILES; do
+  [ "$f" = "super.img" ] && continue
+  cp $G/$f /mnt/nsys/gbos/$f || die "copy $f failed"
+done
+
+say "Copying hardware drivers and firmware ..."
+_d_idx=1
+_d_tot=$(echo $DIRS | wc -w)
+for d in $DIRS; do
+  printf "\r  Drivers: [%d/%d] copying %s/... " "$_d_idx" "$_d_tot" "$d" > $TTY
+  cp -r $G/$d /mnt/nsys/gbos/ || die "copy $d/ failed"
+  _d_idx=$((_d_idx + 1))
+done
+printf "\r  Drivers: [%d/%d] all firmware and drivers copied - OK\n" "$_d_tot" "$_d_tot" > $TTY
+
 cp /gbos/busybox /mnt/nsys/busybox 2>/dev/null
 # The installed system boots normally and can't re-run the installer.
 write_installed_cfg
 sync; echo 3 > /proc/sys/vm/drop_caches
 
-say "Verifying ..."
+say "Verifying installation integrity ..."
 if [ "$INSTALL_MODE" = dualboot ]; then check $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI; else check $KERNEL /mnt/nefi/EFI/BOOT/BOOTX64.EFI; fi
-for f in $FILES; do check $G/$f /mnt/nsys/gbos/$f; done
-for d in $DIRS; do (cd $G && find $d -type f) | while read f; do check $G/$f /mnt/nsys/gbos/$f; done || exit 1; done || die "verify failed"
+for f in $FILES; do
+  if [ "$f" = "super.img" ]; then
+    _sz_src=$(stat -c %s "$G/super.img" 2>/dev/null || echo 0)
+    _sz_dst=$(stat -c %s "/mnt/nsys/gbos/super.img" 2>/dev/null || echo 0)
+    [ "$_sz_src" = "$_sz_dst" ] || die "verify failed: super.img size mismatch ($_sz_dst != $_sz_src)"
+    cmp -n 33554432 "$G/super.img" "/mnt/nsys/gbos/super.img" || die "verify failed: super.img header"
+    echo "ok super.img" >> $L/install.log
+  else
+    check $G/$f /mnt/nsys/gbos/$f
+  fi
+done
+
+for d in $DIRS; do
+  _cnt_src=$(find "$G/$d" -type f | wc -l)
+  _cnt_dst=$(find "/mnt/nsys/gbos/$d" -type f | wc -l)
+  [ "$_cnt_src" = "$_cnt_dst" ] || die "verify failed: $d file count mismatch"
+  echo "ok $d ($_cnt_dst files)" >> $L/install.log
+done
 for i in $STAMPED; do stamp_save $i || true; done
+say "Verification passed!"
+
+# Register Googlebook OS in motherboard UEFI NVRAM if efivarfs is supported
+if [ -d /sys/firmware/efi ]; then
+  mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+  if [ -x $I/bin/efibootmgr ] && [ -d /sys/firmware/efi/efivars ]; then
+    _efi_disk=$(echo "$TARGET_EFI" | sed -E 's/p?[0-9]+$//')
+    _efi_part=$(echo "$TARGET_EFI" | grep -o '[0-9]*$')
+    say "Registering 'Googlebook OS (gbOS86)' in motherboard UEFI NVRAM..."
+    tool efibootmgr -c -d "$_efi_disk" -p "$_efi_part" -L "Googlebook OS (gbOS86)" -l '\EFI\gbos86\BOOTX64.EFI' >> $L/install.log 2>&1 || true
+  fi
+fi
+
+# Add dual-boot menuentry to any Linux partition with GRUB found on the target disk
+if [ "$INSTALL_MODE" = dualboot ]; then
+  _esp_uuid=$(tool blkid -s UUID -o value $TARGET_EFI 2>/dev/null || true)
+  for _p in $(ls /sys/block/$T | grep "^${T}p\?[0-9]"); do
+    case "/dev/$_p" in "$TARGET_SYS"|"$TARGET_DATA"|"$TARGET_EFI") continue;; esac
+    _mroot=$(mktemp -d)
+    if mount -t ext4 -o rw /dev/$_p "$_mroot" 2>/dev/null; then
+      if [ -f "$_mroot/etc/grub.d/40_custom" ]; then
+        if ! grep -q "Googlebook OS (gbOS86)" "$_mroot/etc/grub.d/40_custom" 2>/dev/null; then
+          say "Adding gbOS86 dual-boot menu entry to /etc/grub.d/40_custom on /dev/$_p..."
+          cat <<EOF >> "$_mroot/etc/grub.d/40_custom"
+
+# Googlebook OS (gbOS86) Persistent
+menuentry "Googlebook OS (gbOS86)" --class android --class os {
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --fs-uuid --set=root $_esp_uuid
+    linux /EFI/gbos86/BOOTX64.EFI ibt=off i8042.nopnp module_blacklist=i915 i915.force_probe=!7d55 xe.force_probe=7d55 androidboot.setupwizard.mode=DISABLED usbcore.autosuspend=-1
+}
+EOF
+        fi
+      fi
+      umount "$_mroot" 2>/dev/null || true
+      rmdir "$_mroot" 2>/dev/null || true
+    else
+      rmdir "$_mroot" 2>/dev/null || true
+    fi
+  done
+fi
+
 umount /mnt/nefi /mnt/nsys /mnt/stickefi 2>/dev/null || true; sync
 
 say ""
 say "=============================================================="
 if [ "$INSTALL_MODE" = dualboot ]; then
-  say " gbOS86 is installed on $TD alongside existing OS."
-  say " Remove the USB stick, then turn the laptop back on."
-  say " Press your boot key (F12 / F9 / Esc) at the logo and pick"
-  say " 'gbOS86' or the internal drive UEFI boot entry."
+  say " gbOS86 is successfully installed on $TD alongside existing OS!"
+  say " You can now boot 'Googlebook OS (gbOS86)' from GRUB or UEFI (F12)."
 else
-  say " gbOS86 is installed on $TD."
-  say " Remove the USB stick, then turn the laptop back on. If it doesn't"
-  say " boot gbos, press F12 at the logo and pick the internal disk's UEFI entry"
-  say " (or add \\EFI\\BOOT\\BOOTX64.EFI as a boot option in BIOS setup)."
+  say " gbOS86 is successfully installed on $TD!"
+  say " Press your boot key (F12 / F9 / Esc) at the logo to select gbOS86."
 fi
 say "=============================================================="
 log "install: complete"; sync
-if [ -n "$CONFIRM" ]; then poweroff -f; fi
-ask "Press Enter to power off. "
-poweroff -f
+say ""
+say "What would you like to do next?"
+say "  1) Reboot into gbOS86 now [Default in 30 seconds]"
+say "  2) Power off system"
+say ""
+# Flush any stale keystrokes (e.g. Enter pressed in previous confirmation)
+while read -t 1 -r _junk < $TTY 2>/dev/null; do :; done
+printf 'Choose [1/2, default: 1]: ' > $TTY
+REPLY=
+read -t 30 -r REPLY < $TTY 2>/dev/null || REPLY=1
+[ -z "$REPLY" ] && REPLY=1
+echo "choice: $REPLY" >> $L/install.log
+case "$REPLY" in
+  2|poweroff|off)
+    say "Powering off..."
+    sync; sleep 1
+    poweroff -f
+    ;;
+  *)
+    say "Rebooting into gbOS86..."
+    sync; sleep 2
+    reboot -f
+    ;;
+esac

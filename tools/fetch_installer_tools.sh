@@ -9,9 +9,9 @@ mkdir -p "$OUT"
 # Fedora/RHEL (SELinux enforcing): the bind mount needs :z (relabels only this repo directory).
 Z=; [ "$(getenforce 2>/dev/null)" = Enforcing ] && Z=:z
 docker run --rm --platform linux/amd64 -v "$OUT":/out$Z alpine:latest sh -c '
-apk add -q sfdisk e2fsprogs dosfstools util-linux-misc partx >/dev/null
+apk add -q sfdisk e2fsprogs dosfstools util-linux-misc partx efibootmgr efivar-libs >/dev/null
 rm -rf /out/bin /out/lib; mkdir -p /out/bin /out/lib
-for b in sfdisk mke2fs e2fsck mkfs.fat blkid partx; do
+for b in sfdisk mke2fs e2fsck mkfs.fat blkid partx efibootmgr; do
   r=$(command -v $b); cp -L $r /out/bin/
   ldd $r | awk "/=>/{print \$3}" | while read l; do [ -e "$l" ] && cp -L $l /out/lib/; done
 done
