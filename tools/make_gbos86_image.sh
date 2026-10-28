@@ -120,7 +120,6 @@ if [ "$AUTO_TAILOR" = 1 ]; then
 fi
 
 cp "$ROOT/kernel/out/busybox" "$STAGE/gbos/busybox"
-mkdir -p "$STAGE/gbos/EFI/BOOT" && cp "$U/out/BOOTX64.EFI" "$STAGE/gbos/EFI/BOOT/BOOTX64.EFI"
 
 if [ "$BUILD_TYPE" = "looper" ]; then
   cat > "$STAGE/gbos/README.txt" <<EOF
