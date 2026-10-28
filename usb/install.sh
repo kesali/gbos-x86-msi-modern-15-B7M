@@ -545,17 +545,38 @@ for f in $FILES; do
 done
 
 say "Copying hardware drivers and firmware ..."
-_d_idx=1
-_d_tot=$(echo $DIRS | wc -w)
-for d in $DIRS; do
-  _sz_mb=$(( $(du -sk "$G/$d" 2>/dev/null | awk '{print $1}') / 1024 ))
-  _sz_str=""
-  [ $_sz_mb -gt 0 ] && _sz_str=" (${_sz_mb} MB)"
-  printf "\r  Drivers: [%d/%d] copying %s%s...              " "$_d_idx" "$_d_tot" "$d" "$_sz_str" > $TTY
-  (cd "$G" && tar -cf - "$d") | (cd /mnt/nsys/gbos && tar -xf -) || cp -r "$G/$d" /mnt/nsys/gbos/ || die "copy $d/ failed"
-  _d_idx=$((_d_idx + 1))
+_tot_kb=$(du -sk $G/firmware $G/modules $G/ksu $G/patched $G/installer $G/kmod $G/audio $G/surface 2>/dev/null | awk '{s+=$1} END {print s}')
+[ -z "$_tot_kb" ] || [ "$_tot_kb" -le 0 ] && _tot_kb=1
+_tot_mb=$(( _tot_kb / 1024 ))
+[ $_tot_mb -le 0 ] && _tot_mb=1
+
+_start_used=$(df -k /mnt/nsys 2>/dev/null | awk 'NR>1 {print $3}')
+[ -z "$_start_used" ] && _start_used=0
+
+( (cd "$G" && tar -cf - $DIRS) | (cd /mnt/nsys/gbos && tar -xf -) ) &
+_pid=$!
+while kill -0 $_pid 2>/dev/null; do
+  _cur_used=$(df -k /mnt/nsys 2>/dev/null | awk 'NR>1 {print $3}')
+  _copied_kb=$(( _cur_used - _start_used ))
+  [ $_copied_kb -lt 0 ] && _copied_kb=0
+  _cur_mb=$(( _copied_kb / 1024 ))
+  [ $_cur_mb -gt $_tot_mb ] && _cur_mb=$_tot_mb
+  _pct=$(( _cur_mb * 100 / _tot_mb ))
+  _bars=$(( _pct / 4 ))
+  _spaces=$(( 25 - _bars ))
+  _pbar=""
+  _i=0; while [ $_i -lt $_bars ]; do _pbar="${_pbar}="; _i=$((_i+1)); done
+  [ $_bars -lt 25 ] && _pbar="${_pbar}>" && _spaces=$((_spaces - 1))
+  _i=0; while [ $_i -lt $_spaces ]; do _pbar="${_pbar} "; _i=$((_i+1)); done
+  printf "\r  Drivers: [%s] %3d%% (%d/%d MB)" "$_pbar" "$_pct" "$_cur_mb" "$_tot_mb" > $TTY
+  sleep 1
 done
-printf "\r  Drivers: [%d/%d] all firmware and drivers copied - OK\n" "$_d_tot" "$_d_tot" > $TTY
+wait $_pid || {
+  say "Fallback to copying directory by directory..."
+  for d in $DIRS; do cp -r "$G/$d" /mnt/nsys/gbos/ || die "copy $d/ failed"; done
+}
+printf "\r  Drivers: [=========================] 100%% (%d/%d MB) - OK\n" "$_tot_mb" "$_tot_mb" > $TTY
+echo "Drivers: copied successfully" >> $L/install.log
 
 cp /gbos/busybox /mnt/nsys/busybox 2>/dev/null
 # The installed system boots normally and can't re-run the installer.
@@ -587,8 +608,10 @@ say "Verification passed!"
 
 # Register Googlebook OS in motherboard UEFI NVRAM if efivarfs is supported
 if [ -d /sys/firmware/efi ]; then
+  mkdir -p /sys/firmware/efi/efivars 2>/dev/null || true
+  modprobe -q efivarfs 2>/dev/null || true
   mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
-  if [ -x $I/bin/efibootmgr ] && [ -d /sys/firmware/efi/efivars ]; then
+  if [ -x $I/bin/efibootmgr ] && grep -q efivarfs /proc/mounts 2>/dev/null; then
     _efi_disk=$(echo "$TARGET_EFI" | sed -E 's/p?[0-9]+$//')
     _efi_part=$(echo "$TARGET_EFI" | grep -o '[0-9]*$')
     say "Registering 'Googlebook OS (gbOS86)' in motherboard UEFI NVRAM..."
@@ -600,25 +623,50 @@ fi
 if [ "$INSTALL_MODE" = dualboot ]; then
   _esp_uuid=$(tool blkid $TARGET_EFI 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p')
   [ -z "$_esp_uuid" ] && _esp_uuid=$(tool blkid -s UUID -o value $TARGET_EFI 2>/dev/null || true)
+  if [ -z "$_esp_uuid" ]; then
+    for _u in $(ls /dev/disk/by-uuid 2>/dev/null); do
+      if [ "$(readlink -f /dev/disk/by-uuid/$_u 2>/dev/null)" = "$TARGET_EFI" ]; then
+        _esp_uuid="$_u"; break
+      fi
+    done
+  fi
   for _p in $(ls /sys/block/$T | grep "^${T}p\?[0-9]"); do
     case "/dev/$_p" in "$TARGET_SYS"|"$TARGET_DATA"|"$TARGET_EFI") continue;; esac
     _mroot=$(mktemp -d)
-    if mount -t ext4 -o rw /dev/$_p "$_mroot" 2>/dev/null; then
-      if [ -f "$_mroot/etc/grub.d/40_custom" ]; then
-        if ! grep -q "Googlebook OS (gbOS86)" "$_mroot/etc/grub.d/40_custom" 2>/dev/null; then
-          say "Adding gbOS86 dual-boot menu entry to /etc/grub.d/40_custom on /dev/$_p..."
-          cat <<EOF >> "$_mroot/etc/grub.d/40_custom"
-
+    if mount /dev/$_p "$_mroot" 2>/dev/null || mount -t ext4 /dev/$_p "$_mroot" 2>/dev/null; then
+      _grub_entry="
 # Googlebook OS (gbOS86) Persistent
-menuentry "Googlebook OS (gbOS86)" --class android --class os {
+menuentry \"Googlebook OS (gbOS86)\" --class android --class os {
     insmod part_gpt
     insmod fat
     search --no-floppy --fs-uuid --set=root $_esp_uuid
     linux /EFI/gbos86/BOOTX64.EFI ibt=off i8042.nopnp module_blacklist=i915 i915.force_probe=!7d55 xe.force_probe=7d55 androidboot.setupwizard.mode=DISABLED usbcore.autosuspend=-1
-}
-EOF
+}"
+      _added=0
+      # 1. Add to 40_custom for future update-grub runs
+      if [ -f "$_mroot/etc/grub.d/40_custom" ]; then
+        if ! grep -q "Googlebook OS (gbOS86)" "$_mroot/etc/grub.d/40_custom" 2>/dev/null; then
+          printf "%s\n" "$_grub_entry" >> "$_mroot/etc/grub.d/40_custom"
+          _added=1
         fi
       fi
+      # 2. Add to custom.cfg and active grub.cfg across all standard grub dirs
+      for _gdir in "$_mroot/boot/grub" "$_mroot/boot/grub2" "$_mroot/grub" "$_mroot/grub2"; do
+        if [ -d "$_gdir" ]; then
+          if ! grep -q "Googlebook OS (gbOS86)" "$_gdir/custom.cfg" 2>/dev/null; then
+            printf "%s\n" "$_grub_entry" >> "$_gdir/custom.cfg"
+            _added=1
+          fi
+          if [ -f "$_gdir/grub.cfg" ] && ! grep -q "Googlebook OS (gbOS86)" "$_gdir/grub.cfg" 2>/dev/null; then
+            printf "%s\n" "$_grub_entry" >> "$_gdir/grub.cfg"
+            _added=1
+          fi
+        fi
+      done
+      if [ $_added = 1 ]; then
+        say "Added gbOS86 dual-boot menu entry to GRUB on /dev/$_p."
+      fi
+      sync
       umount "$_mroot" 2>/dev/null || true
       rmdir "$_mroot" 2>/dev/null || true
     else
