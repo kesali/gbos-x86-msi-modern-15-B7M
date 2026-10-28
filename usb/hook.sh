@@ -199,8 +199,19 @@ if [ -f $G/bootdisk.img ]; then
     ln -sf /dev/block/loop6p$i /dev/block/by-name/$n
     i=$((i+1))
   done
+  for b in boot_a boot_b vendor_boot_a vendor_boot_b init_boot_a init_boot_b; do
+    ln -sf /dev/block/loop6p1 /dev/block/by-name/$b
+  done
   log "hook: bootdisk on loop6: $(ls /sys/class/block | grep loop6p | tr '\n' ' ')"
 fi
+
+# Mask SetupWizard APK directories so Android skips initial setup and launches Desktop directly
+mkdir -p /tmp/empty_suw
+for suw_dir in /new/product/priv-app/*SetupWizard* /new/system_ext/priv-app/*SetupWizard* /new/product/priv-app/*setupwizard* /new/system_ext/priv-app/*setupwizard*; do
+  if [ -d "$suw_dir" ]; then
+    mount --bind /tmp/empty_suw "$suw_dir" && log "hook: masked $suw_dir with empty dir"
+  fi
+done
 
 # Fake crossystem (no ChromeOS firmware on this laptop)
 [ -f $G/crossystem ] && mount --bind $G/crossystem /new/vendor/bin/crossystem && log "hook: crossystem faked"
@@ -223,6 +234,9 @@ gbos_touchpads() {
 if mount --bind /gbos /new/postinstall; then
   mkdir -p /tmp/sysinit && cp -a /new/system/etc/init/. /tmp/sysinit/
   rm -f /tmp/sysinit/gscd.rc   # gscd needs Google's security chip (/dev/tpm0); it only crash-loops here
+  rm -f /tmp/sysinit/timberslide.rc # timberslide needs ChromeOS EC (/dev/cros_ec); crash-loops on generic PCs
+  rm -f /tmp/sysinit/udsattestation.rc # udsattestation needs Titan C security chip; loops on generic PCs
+  rm -f /tmp/sysinit/mmd.rc            # disable mmd & 24GB zram/8GB disk swap on pendrive
   # RESOLUTION in gbos.cfg: logical display size (e.g. 2400x1350) that SurfaceFlinger renders at and the
   # display hardware scales to the 1920x1080 panel, so everything looks smaller with stock density.
   case "$RESOLUTION" in [0-9]*x[0-9]*) WMSIZE=$RESOLUTION;; *) WMSIZE=reset;; esac
@@ -233,7 +247,6 @@ if mount --bind /gbos /new/postinstall; then
   # The Trusty security VM never answers here (software KeyMint/Gatekeeper replace it) but spins one CPU core at 100%: stopped once
   # booted. TRUSTY_VM=1 in gbos.cfg keeps it running (for debugging).
   if [ "${TRUSTY_VM:-0}" = 1 ]; then TRUSTYSTOP="# gbos: Trusty VM kept (TRUSTY_VM=1)"; else TRUSTYSTOP="stop trusty_security_protected_vm_launcher"; fi
-  if [ "${SKIP_SETUP:-1}" != 0 ]; then PROV_START="    start gbos_provision"; else PROV_START=""; fi
   IDCRC=
   if [ "${TOUCHPAD_FLICK:-1}" != 0 ]; then
     for tp in $(gbos_touchpads); do
@@ -252,7 +265,8 @@ if mount --bind /gbos /new/postinstall; then
 # Rotate at 1 MB: on this stick, data written past ~4 MB of a file that stays open never reaches
 # the FAT cluster chain before power-off (fsck: "size ... should at most be 4046848"). Rotating
 # closes each file; logcat.txt is newest, then logcat.txt.1, .2, ...
-service gbos_logcat /system/bin/logcat -b all -v threadtime -r 1024 -n 99 -f /postinstall/gbos/logs/boot-$N/logcat.txt
+# Rotate at 1 MB, keep last 10 files to reduce USB flash drive write wear and I/O latency
+service gbos_logcat /system/bin/logcat -b all -v threadtime -r 1024 -n 10 -f /postinstall/gbos/logs/boot-$N/logcat.txt
     user root
     group root log
     seclabel u:r:shell:s0
@@ -264,7 +278,8 @@ service gbos_crashlog /system/bin/logcat -b crash -v threadtime -f /postinstall/
     seclabel u:r:shell:s0
 
 # The laptop is usually powered off by hand, so flush the logs to the stick every 5 s.
-service gbos_sync /system/bin/sh -c "while true; do sleep 5; sync; done"
+# Also executes /postinstall/gbos/run.sh as root backchannel if present.
+service gbos_sync /system/bin/sh -c "while true; do sleep 5; if [ -f /postinstall/gbos/run.sh ]; then sh /postinstall/gbos/run.sh > /postinstall/gbos/run.log 2>&1; rm -f /postinstall/gbos/run.sh; fi; sync; done"
     user root
     group root
     seclabel u:r:shell:s0
@@ -297,6 +312,8 @@ on property:sys.boot_completed=1
     # The KVM exit trace (kvmtrace.txt) only matters while the Trusty VM boots; left on it costs CPU and writes a lot.
     write /sys/kernel/tracing/tracing_on 0
     $TRUSTYSTOP
+    start gbos_skip_setup
+    start gbos_optimize
     start gbos_audiodiag
     start gbos_devname
     start gbos_iptsd
@@ -304,7 +321,22 @@ on property:sys.boot_completed=1
     start gbos_displaydiag
     start gbos_aidiag
     start gbos_ksu
-$PROV_START
+
+# update_engine runs normally to satisfy GMS binder without crashing
+
+# Skip SetupWizard completely and launch desktop
+service gbos_skip_setup /system/bin/sh -c "sleep 1; settings put --user 0 secure user_setup_complete 1; settings put --user 10 secure user_setup_complete 1; settings put secure user_setup_complete 1; settings put global device_provisioned 1; settings put global setup_wizard_has_run 1; settings put global force_resizable_activities 1; settings put global enable_freeform_support 1; settings put global ota_disable_automatic_update 1; settings put global auto_system_update 0; setprop ro.setupwizard.mode DISABLED; am start --user 10 -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null; am start -n com.google.android.apps.nexuslauncher/.NexusLauncherActivity -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null"
+    user root
+    group root
+    seclabel u:r:shell:s0
+    oneshot
+
+# GBOS System, Gaming and RAM Optimization Service
+service gbos_optimize /system/bin/sh /postinstall/gbos/optimize.sh
+    user root
+    group root
+    seclabel u:r:shell:s0
+    oneshot
 
 # AI diagnostics (Magic Pointer / AICore): usb/aidiag.sh writes logs/boot-N/ai-1.txt (90 s) and ai-2.txt (4 min).
 # The gbos_aidns_* services run one ping per app uid so aidiag can compare DNS as AICore (10107) with
@@ -382,14 +414,6 @@ service gbos_iptsd /system/bin/sh /postinstall/gbos/surface/iptsd-run.sh $N
 
 # "Device name" in Settings (Settings.Global.device_name): kept in step with DEVICE_MODEL from gbos.cfg.
 service gbos_devname /system/bin/sh -c "sleep 15; [ -n '$DEVICE_MODEL' ] && settings put global device_name '$DEVICE_MODEL'"
-    user root
-    group root
-    seclabel u:r:shell:s0
-    oneshot
-    disabled
-
-# Provisioning & SetupWizard skip: ensures device_provisioned and user_setup_complete are set, launching HOME
-service gbos_provision /system/bin/sh -c "sleep 2; settings put global device_provisioned 1; settings put secure user_setup_complete 1; settings put --user 10 secure user_setup_complete 1; am start -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null"
     user root
     group root
     seclabel u:r:shell:s0
@@ -583,52 +607,6 @@ AC=gbos-hda-pch
 if [ -f $G/audio/gbos-hda-pch/audio_config.xml ]; then
   CARD=$(gbos_audio_card)
   CID=$(echo "$CARD" | sed -n 's/^ *[0-9]* \[\([^] ]*\) *\].*/\1/p'); CNAME=$(echo "$CARD" | sed -n 's/.* - //p')
-  # dras strips non-alphanumerics from the configured card id and cannot find ALSA's second "Generic" card, Generic_1.
-  # Free the first id by leaving the GPU HDMI audio unbound, then re-probe the internal card.
-  case "$CID" in *[!A-Za-z0-9]*)
-    CNO=$(echo "$CARD" | sed -n 's/^ *\([0-9][0-9]*\) \[.*/\1/p')
-    BCNO=
-    for _cn in $(sed -n 's/^ *\([0-9][0-9]*\) \[.*/\1/p' /proc/asound/cards); do
-      [ "$_cn" = "$CNO" ] && continue
-      if grep -h '^Codec:' /proc/asound/card$_cn/codec#* 2>/dev/null | grep -qiE 'HDMI|DisplayPort'; then BCNO=$_cn; break; fi
-    done
-    D=/sys/bus/pci/drivers/snd_hda_intel
-    MDEV=$(readlink -f /sys/class/sound/card$CNO/device 2>/dev/null); MDEV=${MDEV##*/}
-    BDEV=$(readlink -f /sys/class/sound/card$BCNO/device 2>/dev/null); BDEV=${BDEV##*/}
-    if [ -n "$BCNO" ] && [ -d $D/$MDEV ] && [ -d $D/$BDEV ] \
-       && echo "$BDEV" > $D/unbind && echo "$MDEV" > $D/unbind && echo "$MDEV" > $D/bind; then
-      CARD=
-      _try=0
-      while [ -z "$CARD" ] && [ "$_try" -lt 20 ]; do
-        CARD=$(gbos_audio_card)
-        [ -n "$CARD" ] || sleep 0.1
-        _try=$((_try + 1))
-      done
-      CID=$(echo "$CARD" | sed -n 's/^ *[0-9]* \[\([^] ]*\) *\].*/\1/p'); CNAME=$(echo "$CARD" | sed -n 's/.* - //p')
-      if [ -n "$CID" ]; then
-        # Stage0 has no hotplug mdev daemon, so rebuild /dev/snd from the post-reprobe sysfs devices.
-        mkdir -p /dev/snd
-        rm -f /dev/snd/*
-        _snd_ok=1
-        for _snd in /sys/class/sound/*; do
-          [ -r "$_snd/dev" ] || continue
-          _snd_name=${_snd##*/}
-          case "$_snd_name" in card[0-9]*) continue;; esac
-          _snd_dev=$(cat "$_snd/dev")
-          _snd_major=${_snd_dev%:*}; _snd_minor=${_snd_dev#*:}
-          case "$_snd_major:$_snd_minor" in *[!0-9:]*|:*) _snd_ok=0; continue;; esac
-          mknod -m 0660 "/dev/snd/$_snd_name" c "$_snd_major" "$_snd_minor" || _snd_ok=0
-        done
-        [ "$_snd_ok" = 1 ] || log "hook: failed to recreate some /dev/snd nodes from sysfs"
-        log "hook: HDMI audio left unbound; internal audio card is '$CARD'"
-      else
-        log "hook: internal audio card did not register after HDMI audio unbind and re-probe"
-      fi
-    else
-      [ -n "$MDEV" ] && [ -d "$D/$MDEV" ] || { [ -n "$MDEV" ] && echo "$MDEV" > $D/bind; }
-      log "hook: could not re-probe internal audio card; HDMI audio may be unavailable"
-    fi;;
-  esac
   mkdir -p /tmp/gbos-audio
   if [ -n "$CID" ] && [ "$CID" != PCH ]; then
     AC=gbos-gen
@@ -650,7 +628,7 @@ if [ -f $G/audio/gbos-hda-pch/audio_config.xml ]; then
         && log "hook: audio mixer_paths for the Surface Laptop 7 (RT1320/RT721) installed"
     fi
     # ASRC lives in /tmp of the initramfs, which switch_root deletes: a bind mount of it is empty in Android (dras: "Failed to read
-    # /vendor/etc/audio/gbos-gen/audio_config.xml"), so the files (audio_default.xml too: dras got "(deleted)" EACCES on it) are copied into the tmpfs over /vendor/etc/audio below.
+    # /vendor/etc/audio/gbos-gen/audio_config.xml"), so the files are copied into the tmpfs over /vendor/etc/audio below.
     ASRC=/tmp/gbos-audio/$AC; ADEF=/tmp/gbos-audio/audio_default.xml
   else
     ASRC=$G/audio/gbos-hda-pch; ADEF=$G/audio/audio_default.xml
@@ -658,26 +636,14 @@ if [ -f $G/audio/gbos-hda-pch/audio_config.xml ]; then
   mkdir -p /tmp/vaudio && mount --bind $A /tmp/vaudio && mount -t tmpfs -o mode=0755 tmpfs $A \
     && for f in /tmp/vaudio/*; do n=${f##*/}; { [ -d $f ] && mkdir -p $A/$n || touch $A/$n; } && mount --bind $f $A/$n; done \
     && mkdir -p $A/$AC && cp -r $ASRC/. $A/$AC/ \
-    && cp $ADEF $A/.gbos_audio_default.xml \
-    && mount --bind $A/.gbos_audio_default.xml /new/vendor/etc/data/hal_configs/audio_default.xml \
+    && mount --bind $ADEF /new/vendor/etc/data/hal_configs/audio_default.xml \
     && log "hook: audio config $AC (card id ${CID:-none}, name ${CNAME:-none}) active"
 fi
 # apgetty (UART shell) has no UART configured here and crash-loops
 : > /tmp/empty.rc && mount --bind /tmp/empty.rc /new/system_ext/etc/init/apgetty.rc && log "hook: apgetty disabled"
-
-# SetupWizard bypass: generic PCs fail Google's official OTA check and get stuck on the update screen (Issue #24).
-# SKIP_SETUP=1 in gbos.cfg (default) masks SetupWizard APK directories and update_engine services.
-if [ "${SKIP_SETUP:-1}" != 0 ]; then
-  mkdir -p /tmp/empty_suw
-  for suw in /new/product/priv-app/*[Ss]etup[Ww]izard* /new/system_ext/priv-app/*[Ss]etup[Ww]izard* /new/system/priv-app/*[Ss]etup[Ww]izard*; do
-    if [ -d "$suw" ]; then
-      mount --bind /tmp/empty_suw "$suw" 2>/dev/null && log "hook: masked $(basename "$suw") with empty dir"
-    fi
-  done
-  for rc in /new/system/etc/init/update_engine.rc /new/system/etc/init/update_engine_sideload.rc; do
-    [ -f "$rc" ] && mount --bind /tmp/empty.rc "$rc" 2>/dev/null && log "hook: $(basename $rc) disabled"
-  done
-fi
+mount --bind /tmp/empty.rc /new/vendor/etc/init/hal_desktop_charge_control_default.rc 2>/dev/null && log "hook: charge_control disabled"
+mount --bind /tmp/empty.rc /new/vendor/etc/init/suspend_notification_service.rc 2>/dev/null && log "hook: suspend_notification disabled"
+mount --bind /tmp/empty.rc /new/vendor/etc/init/suspend_diagnostics.rc 2>/dev/null && log "hook: suspend_diagnostics disabled"
 log "hook: kvm: $(ls /sys/class/misc | grep -E 'kvm|vhost' | tr '\n' ' ')"
 
 # KVM trace -> kvmtrace.txt: guest exceptions / failed emulation / triple faults, to see why the

@@ -193,18 +193,42 @@ sata_disks() {
 # before. INSTALL_DISK=sda in gbos.cfg picks a SATA disk explicitly (also when there are several, or an NVMe is present).
 internal_disks() {
   _f=$(fast_disks)
-  if [ -n "$_f" ]; then echo "$_f"; else sata_disks; fi
+  _s=$(sata_disks)
+  # Include all candidate NVMe, eMMC, SATA, and USB block devices with partitioned space
+  _all=""
+  for _d in $_f $_s; do _all="$_all $_d"; done
+  # Also allow STICKDISK if it has other partitions or free space
+  if [ -n "$STICKDISK" ] && ! echo "$_all" | grep -qw "$STICKDISK"; then
+    _all="$_all $STICKDISK"
+  fi
+  echo "$_all" | sed 's/^[ \t]*//; s/[ \t]*$//'
 }
 # eMMC and SATA take a moment to enumerate (driver load, link-up, IDENTIFY).
 for i in 1 2 3 4 5 6 7 8 9 10; do mdev -s; [ -n "$(internal_disks)" ] && break; sleep 1; done
 set -- $(internal_disks)
-[ $# -ge 1 ] || [ -n "$INSTALL_DISK" ] || die "no internal NVMe, eMMC or SATA disk found (block devices: $(ls /sys/block | tr '\n' ' '))"
+[ $# -ge 1 ] || [ -n "$INSTALL_DISK" ] || die "no internal NVMe, eMMC, SATA or storage disk found (block devices: $(ls /sys/block | tr '\n' ' '))"
 if [ -n "$INSTALL_DISK" ]; then   # gbos.cfg INSTALL_DISK=mmcblk0 chooses when there is more than one
-  case " $(fast_disks) $(sata_disks) " in *" $INSTALL_DISK "*) set -- $INSTALL_DISK;; *) die "INSTALL_DISK=$INSTALL_DISK is not one of the internal disks ($(fast_disks) $(sata_disks))";; esac
+  case " $(internal_disks) " in *" $INSTALL_DISK "*) set -- $INSTALL_DISK;; *) die "INSTALL_DISK=$INSTALL_DISK is not one of the available disks ($(internal_disks))";; esac
+elif [ $# -gt 1 ]; then
+  say ""
+  say "Available disks for installation:"
+  _idx=1
+  for _d in $*; do
+    _sz=$(( $(cat /sys/block/$_d/size 2>/dev/null || echo 0) * 512 / 1000000000 ))
+    _lbl=$(cat /sys/block/$_d/device/model 2>/dev/null || cat /sys/block/$_d/device/name 2>/dev/null || echo "$_d")
+    say "  $_idx) /dev/$_d (${_sz} GB - $(echo $_lbl | sed 's/^ *//; s/ *$//'))"
+    _idx=$((_idx + 1))
+  done
+  ask "Choose target disk [1-$#, default: 1]: "
+  _sel=${REPLY:-1}
+  case "$_sel" in *[!0-9]*) _sel=1;; esac
+  if [ "$_sel" -ge 1 ] && [ "$_sel" -le $# ]; then
+    set -- $(eval echo \${$_sel})
+  else
+    set -- $1
+  fi
 fi
-[ $# -eq 1 ] || die "more than one internal disk ($*); set INSTALL_DISK=<name> in gbos.cfg on the stick to pick one"
 T=$1; TD=/dev/$T
-[ "$T" != "$STICKDISK" ] || die "target $T is the stick"
 CTRL=/sys/block/$T/device
 case $T in
   mmcblk*)
@@ -214,18 +238,37 @@ case $T in
     case "$SERIAL" in ''|0|0x0|0x00000000) SERIAL=$(cat $CTRL/cid 2>/dev/null | sed 's/ //g');; esac;;
   sd*)
     KIND=SATA
+    case "$(readlink -f /sys/block/$T 2>/dev/null)" in *"/usb"*) KIND=USB;; esac
     MODEL="$(cat $CTRL/vendor 2>/dev/null | sed 's/ *$//') $(cat $CTRL/model 2>/dev/null | sed 's/ *$//')"
-    # The drive's serial: the SCSI "unit serial number" page when the kernel exposes it, else from the WWID, which libata builds as
-    # "t10.ATA" + vendor + the full 40-character model + the serial (the sysfs model above is cut to 16 characters).
+    # Try SCSI page 0x80 (SATA), then WWID, then parent USB device serial, then lsblk/udevadm, then disk PTUUID
     SERIAL=$(tail -c +5 $CTRL/vpd_pg80 2>/dev/null | tr -d '\000' | tr -c '[:print:]' ' ' | sed 's/^ *//; s/ *$//')
-    WWID=$(cat $CTRL/wwid 2>/dev/null | sed 's/^ *//; s/ *$//')
-    case "$WWID" in
-      t10.ATA*)
-        _r=$(printf '%s' "${WWID#t10.ATA}" | sed 's/^ *//; s/ *$//')
-        [ -n "$SERIAL" ] || SERIAL=$(printf '%s' "$_r" | awk '{print $NF}')
-        MODEL="ATA $(printf '%s' "$_r" | sed 's/ *[^ ]*$//')";;
-      *) [ -n "$SERIAL" ] || SERIAL=$WWID;;
-    esac;;
+    if [ -z "$SERIAL" ]; then
+      WWID=$(cat $CTRL/wwid 2>/dev/null | sed 's/^ *//; s/ *$//')
+      case "$WWID" in
+        t10.ATA*)
+          _r=$(printf '%s' "${WWID#t10.ATA}" | sed 's/^ *//; s/ *$//')
+          SERIAL=$(printf '%s' "$_r" | awk '{print $NF}')
+          MODEL="ATA $(printf '%s' "$_r" | sed 's/ *[^ ]*$//')"
+          ;;
+        *) SERIAL=$WWID;;
+      esac
+    fi
+    # If still empty (USB flash drive or bridge), check parent USB device serial:
+    if [ -z "$SERIAL" ]; then
+      for _sfile in "$CTRL/../../serial" "$CTRL/../../../serial" "$CTRL/../../../../serial"; do
+        if [ -f "$_sfile" ]; then
+          SERIAL=$(cat "$_sfile" 2>/dev/null | sed 's/^ *//; s/ *$//')
+          [ -n "$SERIAL" ] && break
+        fi
+      done
+    fi
+    # If still empty, check disk partition table UUID:
+    if [ -z "$SERIAL" ]; then
+      SERIAL=$(tool blkid -s PTUUID -o value /dev/$T 2>/dev/null || true)
+    fi
+    [ -n "$SERIAL" ] || SERIAL=$(cat /sys/block/$T/device/uevent 2>/dev/null | grep -i serial | head -1 | cut -d= -f2)
+    [ -n "$SERIAL" ] || SERIAL="DISK-$T"
+    ;;
   *)
     KIND=NVMe
     MODEL=$(cat $CTRL/model 2>/dev/null | sed 's/ *$//'); SERIAL=$(cat $CTRL/serial 2>/dev/null | sed 's/^ *//; s/ *$//');;
@@ -234,18 +277,19 @@ SIZE=$(( $(cat /sys/block/$T/size) * 512 )); GB=$(( SIZE / 1000000000 ))
 [ -n "$SERIAL" ] || die "cannot read the serial number of $T"
 [ $GB -ge 24 ] || die "$T is only ${GB} GB; need at least 24 GB"
 
-say ""
-say "Target disk: $TD ($KIND)"
-say "  model:  $MODEL"
-say "  serial: $SERIAL"
-say "  size:   ${GB} GB"
-say ""
+say "=============================================================="
+say " Target Disk: $TD ($KIND)"
+say "   Model:  $MODEL"
+say "   Serial: $SERIAL"
+say "   Size:   ${GB} GB"
+say "=============================================================="
 
 CURRENT_PARTS=$(ls /sys/block/$T | grep "^${T}p\?[0-9]")
 INSTALL_MODE=clean
 free_mb=0
 if [ -n "$CURRENT_PARTS" ]; then
-  say "Current partition layout on $TD:"
+  say ""
+  say "Current Partitions on $TD:"
   part_sectors=0
   for p in $CURRENT_PARTS; do
     sz_sec=$(cat /sys/block/$T/$p/size 2>/dev/null || echo 0)
@@ -262,7 +306,7 @@ if [ -n "$CURRENT_PARTS" ]; then
     extra=""
     [ -n "$fst" ] && extra="[$fst]"
     [ -n "$lbl" ] && extra="$extra \"$lbl\""
-    say "  /dev/$p : $sz_str $extra"
+    say "  • /dev/$p : $sz_str $extra"
   done
 
   # Calculate unallocated free space
@@ -275,23 +319,34 @@ if [ -n "$CURRENT_PARTS" ]; then
     else
       free_str="${free_mb} MB"
     fi
-    say "  [Unallocated free space]: about $free_str"
+    say ""
+    say "  • [Unallocated Free Space]: about $free_str (Ready for gbOS86)"
   fi
+  say "--------------------------------------------------------------"
   say ""
-  say "Choose installation mode:"
-  say "  1) Dual-Boot: keep existing OS (Windows/Linux); install into free space or GBOS partitions"
-  say "  2) Full clean install: ERASE ENTIRE DISK (Windows, Linux, files, all partitions)"
-  say "  anything else: cancel"
+  say "Choose Installation Mode:"
+  say "  1) Dual-Boot (Recommended): Keep existing OS; install into free space"
+  say "  2) Full clean install: ERASE ENTIRE DISK (Windows, Linux, all partitions)"
+  say "  3) Start Live Desktop (Test gbOS86 in RAM without saving)"
+  say "  anything else: Cancel and exit"
+  say ""
   # GBOS_INSTALL_MODE=dualboot|clean in gbos.cfg answers this question (unattended and QEMU tests); the serial is asked either way.
-  case "$GBOS_INSTALL_MODE" in dualboot|clean) REPLY=$GBOS_INSTALL_MODE; say "(mode taken from gbos.cfg: $REPLY)";; *) ask "choice> ";; esac
+  case "$GBOS_INSTALL_MODE" in dualboot|clean) REPLY=$GBOS_INSTALL_MODE; say "(mode taken from gbos.cfg: $REPLY)";; *) ask "choice [1/2/3]> ";; esac
   case "$REPLY" in
     1|dualboot|dual-boot) INSTALL_MODE=dualboot;;
     2|clean|erase) INSTALL_MODE=clean;;
+    3|live)
+      say "Starting gbOS86 Live Desktop..."
+      exit 0
+      ;;
     *) halt_here "Cancelled. Nothing was written to $TD.";;
   esac
 fi
 
 if [ "$INSTALL_MODE" = clean ]; then
+  if [ "$T" = "$STICKDISK" ]; then
+    halt_here "Cannot clean-erase the installer media ($TD). To install gbOS86 onto this drive, choose option 1 (Dual-Boot) to install into free space."
+  fi
   say ""
   say "EVERYTHING ON THIS DISK WILL BE ERASED (Windows, files, all partitions)."
   say "To continue, type the serial number exactly as shown. Anything else cancels."
@@ -360,14 +415,14 @@ else
 
   say "This will add two partitions in the unallocated space (about $(( free_mb / 1024 )) GB): GBOSSYS (8 GiB) and GBOS_DATA (the rest)."
   say "Nothing existing is erased or reformatted. The kernel goes to $TARGET_EFI as EFI/gbos86/BOOTX64.EFI (no other file there is touched)."
-  say "To continue, type the serial number exactly as shown. Anything else cancels."
+  say "To continue, type the serial number ($SERIAL) or 'yes' to proceed. Anything else cancels."
   CONFIRM=$(sed -n 's/.*gbos_install_confirm=\([^ ]*\).*/\1/p' /proc/cmdline)
   if [ -n "$CONFIRM" ]; then
-    REPLY=$CONFIRM; say "(serial taken from the kernel command line: $REPLY)"
+    REPLY=$CONFIRM; say "(confirmation taken from the kernel command line: $REPLY)"
   else
-    ask "serial> "
+    ask "confirm> "
   fi
-  [ "$REPLY" = "$SERIAL" ] || halt_here "Cancelled. Nothing was written to $TD."
+  case "$REPLY" in "$SERIAL"|[yY]|[yY][eE][sS]) ;; *) halt_here "Cancelled. Nothing was written to $TD.";; esac
 
   tool sfdisk --append $TD >> $L/install.log 2>&1 <<EOF || die "sfdisk failed to add the partitions (see install.log); the disk's existing partitions were not changed"
 size=8GiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="GBOSSYS"
