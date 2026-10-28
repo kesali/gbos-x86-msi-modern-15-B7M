@@ -54,14 +54,24 @@ fi
 STAGE="$OUT/$NAME.stage"
 mkdir -p "$OUT"; rm -rf "$STAGE"; mkdir -p "$STAGE/efi/EFI/BOOT" "$STAGE/gbos/gbos"
 
-# 1. System: super.img from Google's partitions
-for n in system_a vendor_a product_a system_ext_a system_dlkm_a vendor_dlkm_a; do
-  [ -f "$P/$n.img" ] || { echo "missing $P/$n.img"; exit 1; }
-done
-echo "== super.img"
-python3 "$U/make_super.py" "$STAGE/gbos/gbos/super.img" "$STAGE/gbos/gbos/super.layout" \
-  system_a="$P/system_a.img" vendor_a="$P/vendor_a.img" product_a="$P/product_a.img" \
-  system_ext_a="$P/system_ext_a.img" system_dlkm_a="$P/system_dlkm_a.img" vendor_dlkm_a="$P/vendor_dlkm_a.img"
+# 1. System: super.img from Google's partitions or pre-built build/super.img
+if [ -f "$ROOT/build/super.img" ] && [ -f "$ROOT/build/super.layout" ]; then
+  echo "== super.img (reusing pre-built image from build/)"
+  cp "$ROOT/build/super.img" "$STAGE/gbos/gbos/super.img"
+  cp "$ROOT/build/super.layout" "$STAGE/gbos/gbos/super.layout"
+elif [ -f "$ROOT/dist/super.img" ] && [ -f "$ROOT/dist/super.layout" ]; then
+  echo "== super.img (reusing pre-built image from dist/)"
+  cp "$ROOT/dist/super.img" "$STAGE/gbos/gbos/super.img"
+  cp "$ROOT/dist/super.layout" "$STAGE/gbos/gbos/super.layout"
+else
+  for n in system_a vendor_a product_a system_ext_a system_dlkm_a vendor_dlkm_a; do
+    [ -f "$P/$n.img" ] || { echo "missing $P/$n.img"; exit 1; }
+  done
+  echo "== super.img"
+  python3 "$U/make_super.py" "$STAGE/gbos/gbos/super.img" "$STAGE/gbos/gbos/super.layout" \
+    system_a="$P/system_a.img" vendor_a="$P/vendor_a.img" product_a="$P/product_a.img" \
+    system_ext_a="$P/system_ext_a.img" system_dlkm_a="$P/system_dlkm_a.img" vendor_dlkm_a="$P/vendor_dlkm_a.img"
+fi
 
 # 2. Everything else stage0/hook/install expect on the stick
 echo "== assembling files ($BUILD_TYPE mode)"
@@ -92,8 +102,10 @@ if [ "$BUILD_TYPE" = "looper" ]; then
   sed -i.bak -e 's/^MODE=.*/MODE=boot/' "$G/gbos.cfg" && rm -f "$G/gbos.cfg.bak"
   grep -q '^MODE=boot$' "$G/gbos.cfg" || { echo "failed to set MODE=boot in $G/gbos.cfg"; exit 1; }
 else
-  # standard installer mode requires MODE=ask
-  grep -q '^MODE=ask$' "$G/gbos.cfg" || { echo "usb/gbos.cfg must have MODE=ask for the image"; exit 1; }
+  # standard installer mode: defaults to MODE=install (direct to clean installer menu) or MODE=ask
+  if ! grep -q '^MODE=\(ask\|install\)$' "$G/gbos.cfg"; then
+    sed -i.bak -e 's/^MODE=.*/MODE=install/' "$G/gbos.cfg" && rm -f "$G/gbos.cfg.bak"
+  fi
 fi
 
 # Apply hardware auto-tailoring if enabled

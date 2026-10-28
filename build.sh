@@ -191,15 +191,21 @@ have_mods() {
 }
 have_swr() { [ -f usb/patched/vulkan.swiftshader.so ]; }
 have_ksu() { [ -f usb/ksu/manager.apk ] && [ -f usb/ksu/ksud ]; }
-have_parts() { for p in $PARTS; do [ -s lapis/parts/$p.img ] || return 1; done; }
+have_parts() {
+  [ -f build/super.img ] && [ -f build/super.layout ] && return 0
+  for p in $PARTS; do [ -s lapis/parts/$p.img ] || return 1; done
+}
 fetch() { # url dest sha
   mkdir -p "$(dirname "$2")"
   curl -fL --retry 5 -C - -o "$2" "$1" || die "download failed: $1"
   [ "$(sha "$2")" = "$3" ] || { rm -f "$2"; die "checksum mismatch for $1 (file deleted, run again)"; }
 }
 
-for c in docker python3 curl tar xz; do command -v $c >/dev/null 2>&1 || die "missing '$c'"; done
-docker info >/dev/null 2>&1 || die "docker is installed but not running"
+for c in python3 curl tar xz; do command -v $c >/dev/null 2>&1 || die "missing '$c'"; done
+if [ ! -x kernel/out/busybox ]; then
+  command -v docker >/dev/null 2>&1 || die "missing 'docker' (needed to extract busybox)"
+  docker info >/dev/null 2>&1 || die "docker is installed but not running"
+fi
 
 NEED=""
 have_parts || NEED="$NEED\n  - Google's recovery image: $GOOGLE (7.7 GB, from dl.google.com)"
