@@ -59,10 +59,16 @@ say "=============================================================="
 
 # Everything this needs must be on the stick before anything is touched.
 STICKDISK=$(basename $(readlink -f /sys/class/block/${DEV##*/}/..))
-EFIPART=/dev/$(ls /sys/class/block/$STICKDISK | grep -m1 "^${STICKDISK}p\?1$")
+EFIPART=$(tool sfdisk -d /dev/$STICKDISK 2>/dev/null | awk 'toupper($0) ~ /TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B/ {print $1; exit}')
+[ -b "$EFIPART" ] || EFIPART=$(findfs LABEL=GBOS_EFI 2>/dev/null)
+[ -b "$EFIPART" ] || EFIPART=$(findfs LABEL=EFI 2>/dev/null)
+[ -b "$EFIPART" ] || EFIPART=/dev/$(ls /sys/class/block/$STICKDISK | grep -m1 "^${STICKDISK}p\?1$")
 mkdir -p /mnt/stickefi && mount -t vfat -o ro $EFIPART /mnt/stickefi 2>/dev/null \
   || die "cannot mount the stick's EFI partition ($EFIPART)"
-KERNEL=/mnt/stickefi/EFI/BOOT/BOOTX64.EFI
+KERNEL=""
+for k in /mnt/stickefi/EFI/gbos/BOOTX64.EFI /mnt/stickefi/EFI/gbos86/BOOTX64.EFI /mnt/stickefi/EFI/BOOT/BOOTX64.EFI; do
+  [ -f "$k" ] && KERNEL="$k" && break
+done
 FILES="super.img super.layout hook.sh aidiag.sh early_patch.sh hwdetect.sh apex_patch.sh crossystem bootdisk.img libkm_compat.so system_ext_manifest.xml soft_gk"
 DIRS="firmware patched audio installer kmod modules surface ksu"
 for f in $FILES; do [ -f $G/$f ] || die "missing gbos/$f on the stick"; done
