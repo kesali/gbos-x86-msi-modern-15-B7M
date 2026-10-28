@@ -72,7 +72,7 @@ EFIPART=$(tool sfdisk -d /dev/$STICKDISK 2>/dev/null | awk 'toupper($0) ~ /TYPE=
 mkdir -p /mnt/stickefi && mount -t vfat -o ro $EFIPART /mnt/stickefi 2>/dev/null \
   || die "cannot mount the stick's EFI partition ($EFIPART)"
 KERNEL=""
-for k in /mnt/stickefi/EFI/gbos/BOOTX64.EFI /mnt/stickefi/EFI/gbos86/BOOTX64.EFI /mnt/stickefi/EFI/BOOT/BOOTX64.EFI; do
+for k in /mnt/stickefi/EFI/gbos/BOOTX64.EFI /mnt/stickefi/EFI/gbos86/BOOTX64.EFI /mnt/stickefi/EFI/BOOT/BOOTX64.EFI /gbos/EFI/BOOT/BOOTX64.EFI $G/../EFI/BOOT/BOOTX64.EFI; do
   [ -f "$k" ] && KERNEL="$k" && break
 done
 FILES="super.img super.layout hook.sh aidiag.sh early_patch.sh hwdetect.sh apex_patch.sh crossystem bootdisk.img libkm_compat.so system_ext_manifest.xml soft_gk"
