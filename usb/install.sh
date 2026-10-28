@@ -57,6 +57,8 @@ write_installed_cfg() {
   echo 'MODE=boot' >> /mnt/nsys/gbos/gbos.cfg
 }
 
+# Suppress kernel console printk mirroring so log messages are not echoed twice on screen
+dmesg -n 1 2>/dev/null || echo 1 > /proc/sys/kernel/printk 2>/dev/null || true
 chvt 1 2>/dev/null
 clear > $TTY 2>/dev/null
 say "=============================================================="
@@ -75,11 +77,14 @@ KERNEL=""
 for k in /mnt/stickefi/EFI/gbos/BOOTX64.EFI /mnt/stickefi/EFI/gbos86/BOOTX64.EFI /mnt/stickefi/EFI/BOOT/BOOTX64.EFI /gbos/EFI/BOOT/BOOTX64.EFI $G/../EFI/BOOT/BOOTX64.EFI; do
   [ -f "$k" ] && KERNEL="$k" && break
 done
+[ -f "$KERNEL" ] || die "missing EFI/BOOT/BOOTX64.EFI on the stick's EFI partition"
+# Cache the kernel in RAM and unmount the EFI partition so it does not keep the target disk busy
+mkdir -p /tmp && cp "$KERNEL" /tmp/BOOTX64.EFI && KERNEL=/tmp/BOOTX64.EFI
+umount /mnt/stickefi 2>/dev/null || true
 FILES="super.img super.layout hook.sh aidiag.sh early_patch.sh hwdetect.sh apex_patch.sh crossystem bootdisk.img libkm_compat.so system_ext_manifest.xml soft_gk"
 DIRS="firmware patched audio installer kmod modules surface ksu"
 for f in $FILES; do [ -f $G/$f ] || die "missing gbos/$f on the stick"; done
 for d in $DIRS; do [ -d $G/$d ] || die "missing gbos/$d/ on the stick"; done
-[ -f $KERNEL ] || die "missing EFI/BOOT/BOOTX64.EFI on the stick's EFI partition"
 tool sfdisk --version > /dev/null 2>&1 || die "partitioning tools in gbos/installer/ don't run"
 
 # ACTION=update in gbos.cfg: don't erase anything. Save the installed system's last 3 boots of logs
@@ -163,7 +168,7 @@ if [ "${ACTION:-install}" = update ]; then
   for f in $FILES; do is_skipped $f || check $G/$f /mnt/nsys/gbos/$f; done
   for d in $DIRS; do is_skipped $d && continue; (cd $G && find $d -type f) | while read f; do check $G/$f /mnt/nsys/gbos/$f; done || exit 1; done || die "verify failed"
   for i in $STAMPED; do stamp_save $i || say "  (could not save the update stamp for $i; the next update will do a full compare)"; done
-  umount /mnt/nefi /mnt/nsys /mnt/stickefi; sync
+  umount /mnt/nefi /mnt/nsys /mnt/stickefi 2>/dev/null || true; sync
   say ""
   say "Update done. Remove the USB stick and turn the laptop back on."
   log "install: update complete"; sync
@@ -442,16 +447,27 @@ else
   fi
   case "$REPLY" in "$SERIAL"|[yY]|[yY][eE][sS]) ;; *) halt_here "Cancelled. Nothing was written to $TD.";; esac
 
-  tool sfdisk --append $TD >> $L/install.log 2>&1 <<EOF || die "sfdisk failed to add the partitions (see install.log); the disk's existing partitions were not changed"
+  tool sfdisk --force --no-reread --append $TD >> $L/install.log 2>&1 <<EOF || die "sfdisk failed to add the partitions (see install.log); the disk's existing partitions were not changed"
 size=8GiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="GBOSSYS"
 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="GBOS_DATA"
 EOF
-  blockdev --rereadpt $TD 2>/dev/null; sleep 2; mdev -s
-  for i in 1 2 3 4 5; do
+  tool partx -u $TD 2>/dev/null || partprobe $TD 2>/dev/null || blockdev --rereadpt $TD 2>/dev/null || true
+  sleep 2; mdev -s
+  for i in 1 2 3 4 5 6 7 8 9 10; do
     # The new partitions have no filesystem yet, so look them up by GPT name.
     PT=$(tool sfdisk -d $TD 2>/dev/null)
     TARGET_SYS=$(echo "$PT" | awk '/name="GBOSSYS"/ {print $1; exit}'); TARGET_DATA=$(echo "$PT" | awk '/name="GBOS_DATA"/ {print $1; exit}')
+    # Ensure block device nodes exist
+    for _tgt in "$TARGET_SYS" "$TARGET_DATA"; do
+      [ -n "$_tgt" ] || continue
+      _pname="${_tgt##*/}"
+      if [ ! -b "$_tgt" ] && [ -f "/sys/block/$T/$_pname/dev" ]; then
+        _mm=$(cat "/sys/block/$T/$_pname/dev" 2>/dev/null)
+        [ -n "$_mm" ] && mknod "$_tgt" b ${_mm%:*} ${_mm#*:} 2>/dev/null || true
+      fi
+    done
     [ -b "$TARGET_SYS" ] && [ -b "$TARGET_DATA" ] && break
+    tool partx -u $TD 2>/dev/null || partprobe $TD 2>/dev/null || true
     sleep 2; mdev -s
   done
   [ -n "$TARGET_SYS" ] && [ -b "$TARGET_SYS" ] || die "GBOSSYS partition did not appear on $TD"
@@ -500,7 +516,7 @@ if [ "$INSTALL_MODE" = dualboot ]; then check $KERNEL /mnt/nefi/EFI/gbos86/BOOTX
 for f in $FILES; do check $G/$f /mnt/nsys/gbos/$f; done
 for d in $DIRS; do (cd $G && find $d -type f) | while read f; do check $G/$f /mnt/nsys/gbos/$f; done || exit 1; done || die "verify failed"
 for i in $STAMPED; do stamp_save $i || true; done
-umount /mnt/nefi /mnt/nsys /mnt/stickefi; sync
+umount /mnt/nefi /mnt/nsys /mnt/stickefi 2>/dev/null || true; sync
 
 say ""
 say "=============================================================="
