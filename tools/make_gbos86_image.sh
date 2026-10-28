@@ -13,12 +13,13 @@
 #     p4 GBOS_DATA   N GiB ext4   Android /data (sparse, expands up to N GiB)
 #
 # Usage:
-#   sh tools/make_gbos86_image.sh [--type standard|looper] [--data-size N_GB] [OUT_DIR]
+#   sh tools/make_gbos86_image.sh [--type standard|looper] [--data-size N_GB] [--auto] [OUT_DIR]
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$ROOT/dist"
 BUILD_TYPE="standard"
 DATA_GB=64
+AUTO_TAILOR=0
 
 # Argument parsing
 while [ $# -gt 0 ]; do
@@ -27,6 +28,7 @@ while [ $# -gt 0 ]; do
     --type) shift; BUILD_TYPE="$1";;
     --data-size=*) DATA_GB="${1#*=}";;
     --data-size) shift; DATA_GB="$1";;
+    -a|--auto|--host) AUTO_TAILOR=1;;
     standard|looper|loopback)
       case "$1" in loopback) BUILD_TYPE="looper";; *) BUILD_TYPE="$1";; esac
       ;;
@@ -79,6 +81,16 @@ if [ "$BUILD_TYPE" = "looper" ]; then
 else
   # standard installer mode requires MODE=ask
   grep -q '^MODE=ask$' "$G/gbos.cfg" || { echo "usb/gbos.cfg must have MODE=ask for the image"; exit 1; }
+fi
+
+# Apply hardware auto-tailoring if enabled
+if [ "$AUTO_TAILOR" = 1 ]; then
+  if [ -f "$ROOT/tools/detect_hardware.sh" ]; then
+    . "$ROOT/tools/detect_hardware.sh"
+    detect_host_hardware
+    echo "== tailoring image configuration for host hardware: $DETECTED_DEVICE_MODEL"
+    apply_hardware_config "$G/gbos.cfg"
+  fi
 fi
 
 cp "$ROOT/kernel/out/busybox" "$STAGE/gbos/busybox"

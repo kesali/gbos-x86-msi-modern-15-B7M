@@ -1,6 +1,7 @@
 #!/bin/sh
 # gbOS86: one-command build.
-#   ./build.sh                     -> interactive menu (standard, looper, or dualboot)
+#   ./build.sh                     -> interactive menu (auto-tailored for this device, standard, looper, or dualboot)
+#   ./build.sh --auto              -> dist/gbOS86-looper-YYYYMMDD.img (auto-detected host hardware profile, MODE=boot)
 #   ./build.sh --standard          -> dist/gbOS86-YYYYMMDD.img (live USB installer, MODE=ask)
 #   ./build.sh --looper            -> dist/gbOS86-looper-YYYYMMDD.img (persistent /data, MODE=boot)
 #   ./build.sh --looper --data-size 32
@@ -24,12 +25,15 @@ YES=0
 DRY=0
 BUILD_TYPE=""
 DATA_GB=64
+AUTO_TAILOR=""
 
 # Parse command line options
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) YES=1;;
     --dry-run) DRY=1;;
+    -a|--auto|--host) AUTO_TAILOR=1;;
+    --no-auto|--generic) AUTO_TAILOR=0;;
     --standard) BUILD_TYPE="standard";;
     --looper|--loopback) BUILD_TYPE="looper";;
     --dualboot|--dual-boot) BUILD_TYPE="dualboot";;
@@ -40,31 +44,74 @@ while [ $# -gt 0 ]; do
     --reformat) EXTRA_FLAGS="$EXTRA_FLAGS --reformat";;
     --data-size) shift; DATA_GB="$1";;
     --data-size=*) DATA_GB="${1#*=}";;
-    -h|--help) sed -n '2,16p' "$0"; exit 0;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0;;
     *) echo "Unknown option: $1"; exit 1;;
   esac
   shift
 done
 
+# Hardware detection helper
+if [ -f "tools/detect_hardware.sh" ]; then
+  . tools/detect_hardware.sh
+  detect_host_hardware
+fi
+
+# Pre-flight CPU architecture compatibility check
+if [ "${DETECTED_CPU_AVX2:-1}" = 0 ]; then
+  printf '\n\033[1;33m[!] WARNING: Host CPU (%s) lacks AVX2 instruction support.\033[0m\n' "${DETECTED_CPU_NAME:-Unknown}"
+  printf '    Google userspace (AOSP 15/16 linker64/init) strictly requires AVX2 (Haswell 4th Gen / Skylake 6th Gen+ or AMD Zen).\n'
+  printf '    An image built on/for this CPU will trigger SIGILL (exitcode 4) during init boot.\n\n'
+fi
+
+# Resolve build type when --auto is passed without explicit type
+if [ "$AUTO_TAILOR" = 1 ] && [ -z "$BUILD_TYPE" ]; then
+  if [ -n "$TARGET_DISK" ]; then
+    BUILD_TYPE="dualboot"
+  else
+    BUILD_TYPE="looper"
+  fi
+fi
+
 # Interactive selection if build type is not pre-set via flags
 if [ -z "$BUILD_TYPE" ]; then
   if [ $YES = 1 ]; then
     BUILD_TYPE="standard"
+    AUTO_TAILOR=0
   else
-    printf '\n================ gbOS86 Target ================\n'
-    echo "  1) Standard image (live USB + installer menu, MODE=ask)"
-    echo "  2) Loopback persistent image (MODE=boot, persistent /data and /metadata)"
-    echo "  3) Dual-boot direct install (non-destructive direct install alongside Windows/Linux)"
-    printf 'Choose target [1/2/3, default: 1]: '
+    printf '\n================ gbOS86 Host Hardware Profile ================\n'
+    printf '  Device Model:  %s\n' "${DETECTED_DEVICE_MODEL:-Unknown Device}"
+    printf '  CPU:           %s\n' "${DETECTED_CPU_NAME:-Unknown CPU}"
+    if [ "$DETECTED_CPU_AVX2" = 1 ]; then
+      printf '  CPU Features:  AVX=yes, AVX2=yes (Compatible with gbOS86)\n'
+    elif [ "$DETECTED_CPU_AVX" = 1 ]; then
+      printf '  CPU Features:  AVX=yes, AVX2=NO [WARNING: AVX2 missing; init will panic]\n'
+    else
+      printf '  CPU Features:  AVX=NO,  AVX2=NO [WARNING: Legacy CPU; init cannot boot]\n'
+    fi
+    printf '  GPU:           %s (%s)\n' "${DETECTED_GPU_NAME:-Unknown}" "${DETECTED_GPU_VENDOR:-Unknown}"
+    printf '  GPU Config:    GPU_SOFTWARE=%s, GPU_VULKAN=%s, LOAD_I915=%s\n' \
+      "${DETECTED_GPU_SW}" "${DETECTED_GPU_VK}" "${DETECTED_LOAD_I915}"
+    if [ -n "$DETECTED_RESOLUTION" ]; then
+      printf '  Display:       %s (Optimal UI Density: %s DPI)\n' "$DETECTED_RESOLUTION" "$DETECTED_DENSITY"
+    else
+      printf '  Display:       No active display detected (using default %s DPI)\n' "$DETECTED_DENSITY"
+    fi
+    if [ -n "$DETECTED_TARGET_DISK" ]; then
+      printf '  Storage:       %s (internal disk)\n' "$DETECTED_TARGET_DISK"
+    fi
+    printf '===============================================================\n'
+
+    echo "  1) Auto-tailored persistent image for this device (MODE=boot) [Default]"
+    echo "  2) Auto-tailored dual-boot install onto ${DETECTED_TARGET_DISK:-target disk}"
+    echo "  3) Standard generic live USB installer (MODE=ask)"
+    echo "  4) Generic loopback persistent image (MODE=boot)"
+    echo "  5) Generic dual-boot direct install alongside Windows/Linux"
+    printf 'Choose target [1-5, default: 1]: '
     read -r ans
     case "$ans" in
-      3|dualboot|dual-boot)
-        BUILD_TYPE="dualboot"
-        printf 'Enter target drive device (e.g. /dev/sda, /dev/sdb): '
-        read -r TARGET_DISK
-        ;;
-      2|looper|loopback)
+      ""|1|auto|host)
         BUILD_TYPE="looper"
+        AUTO_TAILOR=1
         printf 'Enter userdata (/data) size in GB (sparse, expands as needed) [default: 64]: '
         read -r user_sz
         case "$user_sz" in
@@ -72,8 +119,41 @@ if [ -z "$BUILD_TYPE" ]; then
           *) [ "$user_sz" -gt 0 ] && DATA_GB="$user_sz" ;;
         esac
         ;;
-      *)
+      2|auto-dualboot)
+        BUILD_TYPE="dualboot"
+        AUTO_TAILOR=1
+        if [ -n "$DETECTED_TARGET_DISK" ]; then
+          printf 'Target drive device [default: %s]: ' "$DETECTED_TARGET_DISK"
+          read -r user_disk
+          TARGET_DISK="${user_disk:-$DETECTED_TARGET_DISK}"
+        else
+          printf 'Enter target drive device (e.g. /dev/sda, /dev/nvme0n1): '
+          read -r TARGET_DISK
+        fi
+        ;;
+      3|standard)
         BUILD_TYPE="standard"
+        AUTO_TAILOR=0
+        ;;
+      4|looper|loopback)
+        BUILD_TYPE="looper"
+        AUTO_TAILOR=0
+        printf 'Enter userdata (/data) size in GB (sparse, expands as needed) [default: 64]: '
+        read -r user_sz
+        case "$user_sz" in
+          ''|*[!0-9]*) [ -n "$user_sz" ] && echo "Invalid number; using default 64 GB." ;;
+          *) [ "$user_sz" -gt 0 ] && DATA_GB="$user_sz" ;;
+        esac
+        ;;
+      5|dualboot|dual-boot)
+        BUILD_TYPE="dualboot"
+        AUTO_TAILOR=0
+        printf 'Enter target drive device (e.g. /dev/sda, /dev/sdb): '
+        read -r TARGET_DISK
+        ;;
+      *)
+        BUILD_TYPE="looper"
+        AUTO_TAILOR=1
         ;;
     esac
   fi
@@ -164,11 +244,14 @@ if [ "$BUILD_TYPE" = "dualboot" ]; then
   [ -n "$TARGET_DISK" ] || die "Target disk required for dualboot. Pass --target /dev/sdX"
   say "4/4 installing gbOS86 in dual-boot mode onto $TARGET_DISK"
   [ $DRY -eq 1 ] && EXTRA_FLAGS="$EXTRA_FLAGS --dry-run"
+  [ "$AUTO_TAILOR" = 1 ] && EXTRA_FLAGS="$EXTRA_FLAGS --auto"
   [ "$(uname -s)" = Linux ] || die "--dualboot partitions a disk with Linux tools (sgdisk, lsblk): run it from Linux"
   sudo sh tools/install_dualboot.sh --target "$TARGET_DISK" --data-size "${DATA_GB}G" $EXTRA_FLAGS
 else
   say "4/4 building the image ($BUILD_TYPE)"
-  sh tools/make_gbos86_image.sh --type "$BUILD_TYPE" --data-size "$DATA_GB"
+  MAKE_FLAGS="--type $BUILD_TYPE --data-size $DATA_GB"
+  [ "$AUTO_TAILOR" = 1 ] && MAKE_FLAGS="$MAKE_FLAGS --auto"
+  sh tools/make_gbos86_image.sh $MAKE_FLAGS
   echo
   echo "Done. Flash the .img in dist/ to a USB stick or target drive (balenaEtcher, Rufus, or dd), then boot it."
 fi
