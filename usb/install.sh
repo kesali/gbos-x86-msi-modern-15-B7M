@@ -12,7 +12,11 @@
 I=$G/installer
 tool() { $I/lib/ld-musl-x86_64.so.1 --library-path $I/lib $I/bin/"$@"; }
 TTY=/dev/tty1
-say() { echo "$*" > $TTY; echo "$*" >> $L/install.log; log "install: $*"; }
+say() {
+  echo "$*" > $TTY
+  _uptime_s=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
+  echo "[${_uptime_s}s] $*" >> $L/install.log
+}
 halt_here() {
   say ""
   say "$1"
@@ -57,8 +61,9 @@ write_installed_cfg() {
   echo 'MODE=boot' >> /mnt/nsys/gbos/gbos.cfg
 }
 
-# Suppress kernel console printk mirroring so log messages are not echoed twice on screen
-dmesg -n 1 2>/dev/null || echo 1 > /proc/sys/kernel/printk 2>/dev/null || true
+# Suppress kernel console printk mirroring so log messages are not echoed on screen
+echo "1 1 1 1" > /proc/sys/kernel/printk 2>/dev/null || true
+dmesg -n 1 2>/dev/null || true
 chvt 1 2>/dev/null
 clear > $TTY 2>/dev/null
 say "=============================================================="
@@ -137,7 +142,7 @@ if [ "${ACTION:-install}" = update ]; then
   NEFI=$(internal_efi $NSYS)
   [ -n "$NSYS" ] && [ -n "$NEFI" ] || die "no gbos install on the internal disk (GBOSSYS/EFI not found)"
   mkdir -p /mnt/nsys /mnt/nefi
-  mount -t vfat -o flush $NSYS /mnt/nsys || die "mount GBOSSYS failed"
+  mount -t vfat -o noatime $NSYS /mnt/nsys || die "mount GBOSSYS failed"
   mount -t vfat $NEFI /mnt/nefi || die "mount EFI failed"
   # A dual-boot install keeps its kernel in the machine's own EFI partition as EFI/gbos86/BOOTX64.EFI. An EFI partition that is not ours
   # (not labelled GBOS_EFI) without that file is some other OS's: never write to it.
@@ -153,7 +158,7 @@ if [ "${ACTION:-install}" = update ]; then
   done
   for d in $DIRS; do
     case " $STAMPED " in *" $d "*) if stamp_same $d; then SKIP="$SKIP $d"; say "  $d/ unchanged, skipped"; continue; fi;; esac
-    say "  $d/"; rm -rf /mnt/nsys/gbos/$d; cp -r $G/$d /mnt/nsys/gbos/ || die "copy $d/ failed"
+    say "  $d/"; rm -rf /mnt/nsys/gbos/$d; (cd "$G" && tar -cf - "$d") | (cd /mnt/nsys/gbos && tar -xf -) || cp -r "$G/$d" /mnt/nsys/gbos/ || die "copy $d/ failed"
   done
   if [ $SHARED_EFI = 1 ]; then
     cmp -s $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || { say "  kernel (EFI/gbos86)"; cp $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || die "copy kernel failed"; }
@@ -483,7 +488,7 @@ fi
 # Copy, then check every file against the source after dropping the page cache.
 mkdir -p /mnt/nefi /mnt/nsys
 mount -t vfat $TARGET_EFI /mnt/nefi || die "mount EFI failed"
-mount -t vfat -o flush $TARGET_SYS /mnt/nsys || die "mount GBOSSYS failed"
+mount -t vfat -o noatime $TARGET_SYS /mnt/nsys || die "mount GBOSSYS failed"
 mkdir -p /mnt/nsys/gbos/logs
 [ "$INSTALL_MODE" = dualboot ] || mkdir -p /mnt/nefi/EFI/BOOT
 
@@ -543,8 +548,11 @@ say "Copying hardware drivers and firmware ..."
 _d_idx=1
 _d_tot=$(echo $DIRS | wc -w)
 for d in $DIRS; do
-  printf "\r  Drivers: [%d/%d] copying %s/... " "$_d_idx" "$_d_tot" "$d" > $TTY
-  cp -r $G/$d /mnt/nsys/gbos/ || die "copy $d/ failed"
+  _sz_mb=$(( $(du -sk "$G/$d" 2>/dev/null | awk '{print $1}') / 1024 ))
+  _sz_str=""
+  [ $_sz_mb -gt 0 ] && _sz_str=" (${_sz_mb} MB)"
+  printf "\r  Drivers: [%d/%d] copying %s%s...              " "$_d_idx" "$_d_tot" "$d" "$_sz_str" > $TTY
+  (cd "$G" && tar -cf - "$d") | (cd /mnt/nsys/gbos && tar -xf -) || cp -r "$G/$d" /mnt/nsys/gbos/ || die "copy $d/ failed"
   _d_idx=$((_d_idx + 1))
 done
 printf "\r  Drivers: [%d/%d] all firmware and drivers copied - OK\n" "$_d_tot" "$_d_tot" > $TTY

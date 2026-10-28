@@ -4,10 +4,11 @@
 export PATH=/bin:/sbin
 /bin/busybox --install -s /bin
 mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t tmpfs -o mode=0755 tmpfs /dev
+echo "1 1 1 1" > /proc/sys/kernel/printk 2>/dev/null || true
 mknod -m 600 /dev/console c 5 1; mknod -m 600 /dev/kmsg c 1 11; mknod -m 666 /dev/null c 1 3
 mknod -m 620 /dev/tty0 c 4 0; mknod -m 620 /dev/tty1 c 4 1
 exec </dev/console >/dev/console 2>&1
-log() { echo "gbos-stage0: $*" > /dev/kmsg; }
+log() { echo "<7>gbos-stage0: $*" > /dev/kmsg; }
 shell() {
   log "DROPPING TO SHELL ($1). type 'exit' to continue boot."
   setsid cttyhack sh </dev/tty1 >/dev/tty1 2>&1
