@@ -618,6 +618,8 @@ if [ -d /sys/firmware/efi ]; then
     [ "$INSTALL_MODE" = clean ] && _loader='\EFI\BOOT\BOOTX64.EFI'
     say "Registering 'Googlebook OS (gbOS86)' in motherboard UEFI NVRAM..."
     tool efibootmgr -c -d "$_efi_disk" -p "$_efi_part" -L "Googlebook OS (gbOS86)" -l "$_loader" >> $L/install.log 2>&1 || true
+  else
+    echo "efivarfs not supported by kernel; skipping NVRAM registration (GRUB handles dual boot)" >> $L/install.log 2>/dev/null || true
   fi
 fi
 
@@ -645,26 +647,37 @@ menuentry \"Googlebook OS (gbOS86)\" --class android --class os {
     linux /EFI/gbos86/BOOTX64.EFI ibt=off i8042.nopnp module_blacklist=i915 i915.force_probe=!7d55 xe.force_probe=7d55 androidboot.setupwizard.mode=DISABLED usbcore.autosuspend=-1
 }"
       _added=0
-      # 1. Add to 40_custom for future update-grub runs
-      if [ -f "$_mroot/etc/grub.d/40_custom" ]; then
-        if ! grep -q "Googlebook OS (gbOS86)" "$_mroot/etc/grub.d/40_custom" 2>/dev/null; then
-          printf "%s\n" "$_grub_entry" >> "$_mroot/etc/grub.d/40_custom"
-          _added=1
-        fi
-      fi
-      # 2. Add to custom.cfg and active grub.cfg across all standard grub dirs
+      _custom_sourced=0
+      # 1. Prefer custom.cfg if grub.cfg sources it (standard on Ubuntu/Debian via 41_custom)
+      # This prevents duplicate entries while keeping the entry persistent across update-grub.
       for _gdir in "$_mroot/boot/grub" "$_mroot/boot/grub2" "$_mroot/grub" "$_mroot/grub2"; do
-        if [ -d "$_gdir" ]; then
-          if ! grep -q "Googlebook OS (gbOS86)" "$_gdir/custom.cfg" 2>/dev/null; then
-            printf "%s\n" "$_grub_entry" >> "$_gdir/custom.cfg"
-            _added=1
-          fi
-          if [ -f "$_gdir/grub.cfg" ] && ! grep -q "Googlebook OS (gbOS86)" "$_gdir/grub.cfg" 2>/dev/null; then
-            printf "%s\n" "$_grub_entry" >> "$_gdir/grub.cfg"
-            _added=1
+        if [ -d "$_gdir" ] && [ -f "$_gdir/grub.cfg" ]; then
+          if grep -q "custom\.cfg" "$_gdir/grub.cfg" 2>/dev/null; then
+            _custom_sourced=1
+            if ! grep -q "Googlebook OS (gbOS86)" "$_gdir/custom.cfg" 2>/dev/null; then
+              printf "%s\n" "$_grub_entry" >> "$_gdir/custom.cfg"
+              _added=1
+            fi
           fi
         fi
       done
+      # 2. Fallback for distros where grub.cfg does not source custom.cfg
+      if [ $_custom_sourced -eq 0 ]; then
+        if [ -f "$_mroot/etc/grub.d/40_custom" ]; then
+          if ! grep -q "Googlebook OS (gbOS86)" "$_mroot/etc/grub.d/40_custom" 2>/dev/null; then
+            printf "%s\n" "$_grub_entry" >> "$_mroot/etc/grub.d/40_custom"
+            _added=1
+          fi
+        fi
+        for _gdir in "$_mroot/boot/grub" "$_mroot/boot/grub2" "$_mroot/grub" "$_mroot/grub2"; do
+          if [ -d "$_gdir" ] && [ -f "$_gdir/grub.cfg" ]; then
+            if ! grep -q "Googlebook OS (gbOS86)" "$_gdir/grub.cfg" 2>/dev/null; then
+              printf "%s\n" "$_grub_entry" >> "$_gdir/grub.cfg"
+              _added=1
+            fi
+          fi
+        done
+      fi
       if [ $_added = 1 ]; then
         say "Added gbOS86 dual-boot menu entry to GRUB on /dev/$_p."
       fi
