@@ -611,7 +611,7 @@ if [ -d /sys/firmware/efi ]; then
   mkdir -p /sys/firmware/efi/efivars 2>/dev/null || true
   modprobe -q efivarfs 2>/dev/null || true
   mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
-  if [ -x $I/bin/efibootmgr ] && grep -q efivarfs /proc/mounts 2>/dev/null; then
+  if [ -f "$I/bin/efibootmgr" ] && grep -q efivarfs /proc/mounts 2>/dev/null; then
     _efi_disk=$(echo "$TARGET_EFI" | sed -E 's/p?[0-9]+$//')
     _efi_part=$(echo "$TARGET_EFI" | grep -o '[0-9]*$')
     _loader='\EFI\gbos86\BOOTX64.EFI'
