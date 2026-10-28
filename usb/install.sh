@@ -523,6 +523,7 @@ say "Copying the kernel ..."
 if [ "$INSTALL_MODE" = dualboot ]; then
   mkdir -p /mnt/nefi/EFI/gbos86
   cp $KERNEL /mnt/nefi/EFI/gbos86/BOOTX64.EFI || die "copy BOOTX64.EFI failed"
+  [ -f "$G/Add-gbOS-to-Windows-BootMenu.bat" ] && cp "$G/Add-gbOS-to-Windows-BootMenu.bat" /mnt/nefi/EFI/gbos86/ 2>/dev/null || true
 fi
 # The fallback path EFI/BOOT/BOOTX64.EFI belongs to the machine's other OS on a shared EFI partition: only a clean install owns it.
 if [ "$INSTALL_MODE" = clean ]; then

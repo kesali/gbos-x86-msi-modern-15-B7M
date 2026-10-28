@@ -77,9 +77,10 @@ fi
 echo "== assembling files ($BUILD_TYPE mode)"
 cp "$U/out/BOOTX64.EFI" "$STAGE/efi/EFI/BOOT/BOOTX64.EFI"
 G="$STAGE/gbos/gbos"
-for f in hook.sh aidiag.sh early_patch.sh hwdetect.sh install.sh apex_patch.sh gbos.cfg crossystem bootdisk.img libkm_compat.so system_ext_manifest.xml soft_gk; do
-  cp "$U/$f" "$G/$f"
+for f in hook.sh aidiag.sh early_patch.sh hwdetect.sh install.sh apex_patch.sh gbos.cfg crossystem bootdisk.img libkm_compat.so system_ext_manifest.xml soft_gk Add-gbOS-to-Windows-BootMenu.bat; do
+  [ -f "$U/$f" ] && cp "$U/$f" "$G/$f"
 done
+[ -f "$U/Add-gbOS-to-Windows-BootMenu.bat" ] && cp "$U/Add-gbOS-to-Windows-BootMenu.bat" "$STAGE/gbos/Add-gbOS-to-Windows-BootMenu.bat"
 for d in firmware patched audio installer kmod modules surface ksu; do cp -R "$U/$d" "$G/$d"; done
 # Ensure both '+' and non-'+' versions exist on the FAT32 image filesystem
 for _m in "$G/modules/lib/modules/"*-gbos-whl+; do
