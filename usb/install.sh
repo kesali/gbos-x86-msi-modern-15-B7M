@@ -598,7 +598,8 @@ fi
 
 # Add dual-boot menuentry to any Linux partition with GRUB found on the target disk
 if [ "$INSTALL_MODE" = dualboot ]; then
-  _esp_uuid=$(tool blkid -s UUID -o value $TARGET_EFI 2>/dev/null || true)
+  _esp_uuid=$(tool blkid $TARGET_EFI 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p')
+  [ -z "$_esp_uuid" ] && _esp_uuid=$(tool blkid -s UUID -o value $TARGET_EFI 2>/dev/null || true)
   for _p in $(ls /sys/block/$T | grep "^${T}p\?[0-9]"); do
     case "/dev/$_p" in "$TARGET_SYS"|"$TARGET_DATA"|"$TARGET_EFI") continue;; esac
     _mroot=$(mktemp -d)
