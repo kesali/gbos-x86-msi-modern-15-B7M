@@ -614,8 +614,10 @@ if [ -d /sys/firmware/efi ]; then
   if [ -x $I/bin/efibootmgr ] && grep -q efivarfs /proc/mounts 2>/dev/null; then
     _efi_disk=$(echo "$TARGET_EFI" | sed -E 's/p?[0-9]+$//')
     _efi_part=$(echo "$TARGET_EFI" | grep -o '[0-9]*$')
+    _loader='\EFI\gbos86\BOOTX64.EFI'
+    [ "$INSTALL_MODE" = clean ] && _loader='\EFI\BOOT\BOOTX64.EFI'
     say "Registering 'Googlebook OS (gbOS86)' in motherboard UEFI NVRAM..."
-    tool efibootmgr -c -d "$_efi_disk" -p "$_efi_part" -L "Googlebook OS (gbOS86)" -l '\EFI\gbos86\BOOTX64.EFI' >> $L/install.log 2>&1 || true
+    tool efibootmgr -c -d "$_efi_disk" -p "$_efi_part" -L "Googlebook OS (gbOS86)" -l "$_loader" >> $L/install.log 2>&1 || true
   fi
 fi
 
