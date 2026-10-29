@@ -13,12 +13,13 @@
 #     p4 GBOS_DATA   N GiB ext4   Android /data (sparse, expands up to N GiB)
 #
 # Usage:
-#   sh tools/make_gbos86_image.sh [--type standard|looper] [--data-size N_GB] [OUT_DIR]
+#   sh tools/make_gbos86_image.sh [--type standard|looper] [--data-size N_GB] [--auto] [OUT_DIR]
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$ROOT/dist"
 BUILD_TYPE="standard"
 DATA_GB=64
+AUTO_TAILOR=0
 
 # Argument parsing
 while [ $# -gt 0 ]; do
@@ -27,6 +28,7 @@ while [ $# -gt 0 ]; do
     --type) shift; BUILD_TYPE="$1";;
     --data-size=*) DATA_GB="${1#*=}";;
     --data-size) shift; DATA_GB="$1";;
+    -a|--auto|--host) AUTO_TAILOR=1;;
     standard|looper|loopback)
       case "$1" in loopback) BUILD_TYPE="looper";; *) BUILD_TYPE="$1";; esac
       ;;
@@ -52,23 +54,47 @@ fi
 STAGE="$OUT/$NAME.stage"
 mkdir -p "$OUT"; rm -rf "$STAGE"; mkdir -p "$STAGE/efi/EFI/BOOT" "$STAGE/gbos/gbos"
 
-# 1. System: super.img from Google's partitions
-for n in system_a vendor_a product_a system_ext_a system_dlkm_a vendor_dlkm_a; do
-  [ -f "$P/$n.img" ] || { echo "missing $P/$n.img"; exit 1; }
-done
-echo "== super.img"
-python3 "$U/make_super.py" "$STAGE/gbos/gbos/super.img" "$STAGE/gbos/gbos/super.layout" \
-  system_a="$P/system_a.img" vendor_a="$P/vendor_a.img" product_a="$P/product_a.img" \
-  system_ext_a="$P/system_ext_a.img" system_dlkm_a="$P/system_dlkm_a.img" vendor_dlkm_a="$P/vendor_dlkm_a.img"
+# 1. System: super.img from Google's partitions or pre-built build/super.img
+if [ -f "$ROOT/build/super.img" ] && [ -f "$ROOT/build/super.layout" ]; then
+  echo "== super.img (reusing pre-built image from build/)"
+  cp "$ROOT/build/super.img" "$STAGE/gbos/gbos/super.img"
+  cp "$ROOT/build/super.layout" "$STAGE/gbos/gbos/super.layout"
+elif [ -f "$ROOT/dist/super.img" ] && [ -f "$ROOT/dist/super.layout" ]; then
+  echo "== super.img (reusing pre-built image from dist/)"
+  cp "$ROOT/dist/super.img" "$STAGE/gbos/gbos/super.img"
+  cp "$ROOT/dist/super.layout" "$STAGE/gbos/gbos/super.layout"
+else
+  for n in system_a vendor_a product_a system_ext_a system_dlkm_a vendor_dlkm_a; do
+    [ -f "$P/$n.img" ] || { echo "missing $P/$n.img"; exit 1; }
+  done
+  echo "== super.img"
+  python3 "$U/make_super.py" "$STAGE/gbos/gbos/super.img" "$STAGE/gbos/gbos/super.layout" \
+    system_a="$P/system_a.img" vendor_a="$P/vendor_a.img" product_a="$P/product_a.img" \
+    system_ext_a="$P/system_ext_a.img" system_dlkm_a="$P/system_dlkm_a.img" vendor_dlkm_a="$P/vendor_dlkm_a.img"
+fi
 
 # 2. Everything else stage0/hook/install expect on the stick
 echo "== assembling files ($BUILD_TYPE mode)"
 cp "$U/out/BOOTX64.EFI" "$STAGE/efi/EFI/BOOT/BOOTX64.EFI"
 G="$STAGE/gbos/gbos"
-for f in hook.sh aidiag.sh early_patch.sh hwdetect.sh install.sh apex_patch.sh gbos.cfg crossystem bootdisk.img libkm_compat.so system_ext_manifest.xml soft_gk; do
-  cp "$U/$f" "$G/$f"
+for f in hook.sh aidiag.sh early_patch.sh hwdetect.sh install.sh apex_patch.sh gbos.cfg crossystem bootdisk.img libkm_compat.so system_ext_manifest.xml soft_gk Add-gbOS-to-Windows-BootMenu.bat; do
+  [ -f "$U/$f" ] && cp "$U/$f" "$G/$f"
 done
+[ -f "$U/Add-gbOS-to-Windows-BootMenu.bat" ] && cp "$U/Add-gbOS-to-Windows-BootMenu.bat" "$STAGE/gbos/Add-gbOS-to-Windows-BootMenu.bat"
 for d in firmware patched audio installer kmod modules surface ksu; do cp -R "$U/$d" "$G/$d"; done
+# Ensure both '+' and non-'+' versions exist on the FAT32 image filesystem
+for _m in "$G/modules/lib/modules/"*-gbos-whl+; do
+  if [ -d "$_m" ]; then
+    _base="${_m%+}"
+    [ ! -d "$_base" ] && cp -a "$_m" "$_base" 2>/dev/null || true
+  fi
+done
+for _m in "$G/modules/lib/modules/"*-gbos-whl; do
+  if [ -d "$_m" ]; then
+    _plus="${_m}+"
+    [ ! -d "$_plus" ] && cp -a "$_m" "$_plus" 2>/dev/null || true
+  fi
+done
 mkdir -p "$G/logs"
 
 # Configure boot mode
@@ -77,12 +103,23 @@ if [ "$BUILD_TYPE" = "looper" ]; then
   sed -i.bak -e 's/^MODE=.*/MODE=boot/' "$G/gbos.cfg" && rm -f "$G/gbos.cfg.bak"
   grep -q '^MODE=boot$' "$G/gbos.cfg" || { echo "failed to set MODE=boot in $G/gbos.cfg"; exit 1; }
 else
-  # standard installer mode requires MODE=ask
-  grep -q '^MODE=ask$' "$G/gbos.cfg" || { echo "usb/gbos.cfg must have MODE=ask for the image"; exit 1; }
+  # standard installer mode: defaults to MODE=install (direct to clean installer menu) or MODE=ask
+  if ! grep -q '^MODE=\(ask\|install\)$' "$G/gbos.cfg"; then
+    sed -i.bak -e 's/^MODE=.*/MODE=install/' "$G/gbos.cfg" && rm -f "$G/gbos.cfg.bak"
+  fi
+fi
+
+# Apply hardware auto-tailoring if enabled
+if [ "$AUTO_TAILOR" = 1 ]; then
+  if [ -f "$ROOT/tools/detect_hardware.sh" ]; then
+    . "$ROOT/tools/detect_hardware.sh"
+    detect_host_hardware
+    echo "== tailoring image configuration for host hardware: $DETECTED_DEVICE_MODEL"
+    apply_hardware_config "$G/gbos.cfg"
+  fi
 fi
 
 cp "$ROOT/kernel/out/busybox" "$STAGE/gbos/busybox"
-mkdir -p "$STAGE/gbos/EFI/BOOT" && cp "$U/out/BOOTX64.EFI" "$STAGE/gbos/EFI/BOOT/BOOTX64.EFI"
 
 if [ "$BUILD_TYPE" = "looper" ]; then
   cat > "$STAGE/gbos/README.txt" <<EOF

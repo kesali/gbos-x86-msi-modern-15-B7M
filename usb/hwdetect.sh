@@ -17,10 +17,17 @@ GBOS_FWPATH=/sys/module/firmware_class/parameters/path
 
 gbos_modules_mount() {
   KVER=$(uname -r)
-  if [ -f $G/modules/lib/modules/$KVER/modules.dep ]; then
-    mount --bind $G/modules/lib/modules /lib/modules 2>/dev/null \
-      && log "hwdetect: module tree $KVER ($(find /lib/modules/$KVER -name '*.ko' | wc -l) modules) from gbos/modules" \
-      || log "hwdetect: bind mount of gbos/modules FAILED"
+  MDIR=""
+  if [ -f "$G/modules/lib/modules/$KVER/modules.dep" ]; then
+    MDIR="$G/modules/lib/modules/$KVER"
+  elif [ -f "$G/modules/lib/modules/${KVER}+/modules.dep" ]; then
+    MDIR="$G/modules/lib/modules/${KVER}+"
+  fi
+  if [ -n "$MDIR" ]; then
+    mkdir -p "/lib/modules/$KVER"
+    mount --bind "$MDIR" "/lib/modules/$KVER" 2>/dev/null \
+      && log "hwdetect: module tree $KVER ($(find /lib/modules/$KVER -name '*.ko' | wc -l) modules) bound from $MDIR" \
+      || log "hwdetect: bind mount of $MDIR to /lib/modules/$KVER FAILED"
     return 0
   fi
   # A tree built for another kernel (e.g. "6.18.21-gbos-whl+" on a "6.18.21-gbos-whl" kernel) is not bound: its modules carry the other

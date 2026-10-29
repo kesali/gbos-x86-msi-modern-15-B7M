@@ -4,10 +4,11 @@
 export PATH=/bin:/sbin
 /bin/busybox --install -s /bin
 mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t tmpfs -o mode=0755 tmpfs /dev
+echo "1 1 1 1" > /proc/sys/kernel/printk 2>/dev/null || true
 mknod -m 600 /dev/console c 5 1; mknod -m 600 /dev/kmsg c 1 11; mknod -m 666 /dev/null c 1 3
 mknod -m 620 /dev/tty0 c 4 0; mknod -m 620 /dev/tty1 c 4 1
 exec </dev/console >/dev/console 2>&1
-log() { echo "gbos-stage0: $*" > /dev/kmsg; }
+log() { echo "<7>gbos-stage0: $*" > /dev/kmsg; }
 shell() {
   log "DROPPING TO SHELL ($1). type 'exit' to continue boot."
   setsid cttyhack sh </dev/tty1 >/dev/tty1 2>&1
@@ -48,14 +49,17 @@ DEV=$STICK; FROM=stick; SELMODE=
 boot_menu() {
   def=1; [ -n "$SYS" ] && def=3
   chvt 1 2>/dev/null; clear > /dev/tty1 2>/dev/null
+  sleep 1
+  # Discard any residual keystrokes (e.g. Enter pressed in GRUB)
+  while read -t 1 -r _junk < /dev/tty1 2>/dev/null; do :; done
   {
     echo; echo "   gbOS86"; echo "   ------"; echo
     echo "   1) Run gbOS86 live from this USB (nothing is saved)"
     echo "   2) Install or update gbOS86 on this laptop's internal SSD"
     [ -n "$SYS" ] && echo "   3) Boot the installed gbOS86"
-    echo; printf "   Choose 1-%s [default %s in 10 s]: " "$([ -n "$SYS" ] && echo 3 || echo 2)" $def
+    echo; printf "   Choose 1-%s [default %s in 15 s]: " "$([ -n "$SYS" ] && echo 3 || echo 2)" $def
   } > /dev/tty1
-  c=; read -t 10 -n 1 c < /dev/tty1; echo > /dev/tty1
+  c=; read -t 15 -r c < /dev/tty1; echo > /dev/tty1
   case "$c" in 1|2) ;; 3) [ -n "$SYS" ] || c=$def;; *) c=$def;; esac
   log "boot menu: choice $c (default $def)"
   CHOICE=$c
@@ -100,6 +104,8 @@ SHELL_AT=none; LOAD_I915=1; LOAD_WIFI=0; EXTRA_SLEEP=0; MODE=boot
 [ -f $G/gbos.cfg ] && . $G/gbos.cfg && log "loaded gbos.cfg: MODE=$MODE SHELL_AT=$SHELL_AT LOAD_I915=$LOAD_I915 LOAD_WIFI=$LOAD_WIFI"
 # The boot menu's choice wins over gbos.cfg's MODE (ask/live are menu-level settings).
 [ -n "$SELMODE" ] && MODE=$SELMODE
+# Reset temporary one-shot MODE=live back to MODE=ask on USB stick so future boots prompt the user
+[ "$FROM" = stick ] && [ -f $G/gbos.cfg ] && grep -q '^MODE=live' $G/gbos.cfg 2>/dev/null && sed -i 's/^MODE=live/MODE=ask/' $G/gbos.cfg 2>/dev/null || true
 case "$MODE" in install) ;; *) MODE=boot;; esac
 [ $FROM = nvme ] && MODE=boot
 

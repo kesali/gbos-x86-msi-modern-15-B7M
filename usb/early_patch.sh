@@ -4,6 +4,14 @@
 # first: this wraps chroot (dmctl's only external command) and does it once, just before the first call.
 # Which files, and the sha256 of the exact original each patch needs, come from patched/MANIFEST ("early" lines; written
 # by tools/port_build.py). Fail-safe: if this never fires, hook.sh does the same binds later (gbos_bind_patches).
+
+# Reset one-shot MODE=live back to MODE=ask so subsequent boots prompt the user
+_cfg="${G:-/gbos/gbos}/gbos.cfg"
+if [ -f "$_cfg" ] && grep -q '^MODE=live' "$_cfg" 2>/dev/null; then
+  sed -i 's/^MODE=live/MODE=ask/' "$_cfg" 2>/dev/null || true
+  sync 2>/dev/null || true
+fi
+unset _cfg
 gbos_early_patch() {
   [ -f "$G/patched/MANIFEST" ] || return 0
   while read -r ep_kind ep_target ep_want ep_file ep_rest; do

@@ -15,6 +15,7 @@ DATA_SIZE="64G"
 REFORMAT=0
 DRY_RUN=0
 SKIP_DOWNLOAD=0
+AUTO_TAILOR=0
 
 ALLOW_INTERNAL=0
 ALLOW_ROOT=0
@@ -55,6 +56,7 @@ while [ $# -gt 0 ]; do
     --allow-internal) ALLOW_INTERNAL=1; shift;;
     --allow-root) ALLOW_ROOT=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
+    -a|--auto|--host) AUTO_TAILOR=1; shift;;
     -h|--help) usage 0;;
     *) die "Unknown argument: $1";;
   esac
@@ -201,6 +203,19 @@ done
 for d in firmware patched audio installer kmod modules surface ksu; do
   [ -d "$U/$d" ] && { mkdir -p "$MNT_SYS/gbos/$d"; cp -R "$U/$d/." "$MNT_SYS/gbos/$d/"; }
 done
+# Ensure both '+' and non-'+' versions exist on the FAT32 filesystem
+for _m in "$MNT_SYS/gbos/modules/lib/modules/"*-gbos-whl+; do
+  if [ -d "$_m" ]; then
+    _base="${_m%+}"
+    [ ! -d "$_base" ] && cp -a "$_m" "$_base" 2>/dev/null || true
+  fi
+done
+for _m in "$MNT_SYS/gbos/modules/lib/modules/"*-gbos-whl; do
+  if [ -d "$_m" ]; then
+    _plus="${_m}+"
+    [ ! -d "$_plus" ] && cp -a "$_m" "$_plus" 2>/dev/null || true
+  fi
+done
 
 # The system image: build it from lapis/parts (the same call as tools/make_gbos86_image.sh), unless a built one is around
 SUPER=""
@@ -220,6 +235,16 @@ cp "$SUPER/super.img" "$MNT_SYS/gbos/super.img" && cp "$SUPER/super.layout" "$MN
 
 # Ensure MODE=boot in gbos.cfg
 sed -i 's/^MODE=.*/MODE=boot/' "$MNT_SYS/gbos/gbos.cfg" 2>/dev/null || true
+
+# Apply hardware auto-tailoring if enabled
+if [ "$AUTO_TAILOR" = 1 ]; then
+  if [ -f "$ROOT/tools/detect_hardware.sh" ]; then
+    . "$ROOT/tools/detect_hardware.sh"
+    detect_host_hardware
+    say "Tailoring gbos.cfg for host hardware: $DETECTED_DEVICE_MODEL ..."
+    apply_hardware_config "$MNT_SYS/gbos/gbos.cfg"
+  fi
+fi
 
 # Copy kernel to EFI partition
 MNT_EFI=$(mktemp -d)
